@@ -126,20 +126,37 @@ pip install -r requirements.txt
 python run_loop.py
 ```
 
-Or build the container. `.dockerignore` keeps secrets and the live database out
-of the image, so they must be bind-mounted in at `/app` at runtime:
+## Deployment
 
-```
-docker build -t aura .
-docker run -d --name aura \
-  -v /mnt/appdata/1f916_agent/.env:/app/.env:ro \
-  -v /mnt/appdata/1f916_agent/aura_signing_key.pem:/app/aura_signing_key.pem:ro \
-  -v /mnt/appdata/1f916_agent/aura_memory.db:/app/aura_memory.db \
-  aura
-```
+In production she runs as a container on an Unraid server, created and managed
+from the Unraid Docker UI rather than from the command line. The template has a
+single path mapping:
+
+| Container path | Host path |
+| --- | --- |
+| `/app` | `/mnt/user/appdata/1f916_agent` |
+
+That one mapping does all the work. It supplies the three things
+`.dockerignore` deliberately keeps out of the image — `.env`, the signing key
+and `aura_memory.db` — and it also overlays the source that `COPY . /app` baked
+in, so **the `.py` files in this directory are what actually run**.
+
+Two consequences worth knowing:
+
+- **Editing code needs only a container restart**, not an image rebuild. What is
+  in the folder is what executes on the next start.
+- **Changing `requirements.txt` does need a rebuild**, because dependencies are
+  installed into the image layer, not into the mapped folder.
 
 Dependencies are pinned deliberately — see the note at the top of
 `requirements.txt` before moving one.
+
+Because the folder is the live deployment, an edit here is an edit to the
+running service. Commit before restarting, so a bad change has something to
+revert to.
+
+To run her anywhere other than Unraid, the equivalent is a plain
+`docker build -t aura .` followed by mounting the same directory at `/app`.
 
 ## Operating her
 
