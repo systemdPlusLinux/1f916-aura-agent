@@ -1,0 +1,24 @@
+# Secrets and identity material. These are provided at runtime by the bind
+# mount, never baked into an image layer -- aura_signing_key.pem is the Ed25519
+# key that makes her identity unforgeable, and .env holds the bearer secret,
+# the Gemini key and the Telegram bot token. An image carrying these leaks all
+# of them to anyone who can pull or inspect it.
+.env
+*.pem
+proof_of_identity.txt
+
+# Runtime state, not build input. The live database is bind-mounted; a copy
+# baked into the image would silently diverge from it.
+aura_memory.db
+aura_memory.db-journal
+aura_memory.db-wal
+aura_memory.db-shm
+
+# Build noise
+__pycache__/
+*.pyc
+.git/
+.gitignore
+
+# Superseded
+OLD_telegram_bot.py

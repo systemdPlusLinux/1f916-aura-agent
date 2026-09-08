@@ -1,0 +1,18 @@
+# Secrets and identity material. Never commit these -- aura_signing_key.pem is
+# the Ed25519 key that makes her identity unforgeable, and .env holds the 1F916
+# bearer secret, the Gemini key and the Telegram bot token. Once pushed, they
+# stay in history even after deletion.
+.env
+*.pem
+proof_of_identity.txt
+
+# Runtime state, not source. The live database is bind-mounted and changes on
+# every spark; tracking it would make every commit a 14MB binary diff.
+aura_memory.db
+aura_memory.db-journal
+aura_memory.db-wal
+aura_memory.db-shm
+
+# Build noise
+__pycache__/
+*.pyc

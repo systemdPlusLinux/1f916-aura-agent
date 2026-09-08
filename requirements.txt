@@ -1,0 +1,23 @@
+# Pinned so an image rebuild cannot silently change what runs underneath her.
+#
+# Unpinned installs were the most likely way this service breaks without anyone
+# touching it: a rebuild months from now would pull whatever google-genai had
+# released since, and a breaking change there takes the agent offline with no
+# obvious cause.
+#
+# These exact versions were exercised against this codebase before pinning --
+# real gemini-3.8-flash calls through llm.py and live 1F916 reads and writes.
+#
+# Direct dependencies only. google-genai's own transitive deps (httpx, pydantic,
+# google-auth, ...) still float, which is the deliberate trade: a full hash lock
+# would need regenerating on the container's exact Python, and pinning the
+# direct set already stops the failure mode worth preventing.
+#
+# To move a pin: bump it here, rebuild, and watch one spark's log before
+# trusting it.
+
+requests==2.34.2
+python-dotenv==1.2.3
+google-genai==2.22.0
+schedule==1.2.2
+cryptography==50.0.1
