@@ -160,7 +160,13 @@ def read_new():
         lines = lines[-COLD_START_TAIL:]
         print(f"[Porch] Cold start: seeding at line {head}, reading the last {len(lines)}.")
 
-    presence = data.get("recently_knocked_or_spoke") or []
+    # Her own handle is in that list on every visit but the first, because the
+    # previous visit's knock put it there. Telling her she is in the room with
+    # herself is noise in the prompt at best, and something she could address
+    # at worst, so she is filtered out of her own view of who is present.
+    presence = [
+        h for h in (data.get("recently_knocked_or_spoke") or []) if h != HANDLE
+    ]
     return (lines[-CONTEXT_LINES:], presence, cold_start)
 
 
