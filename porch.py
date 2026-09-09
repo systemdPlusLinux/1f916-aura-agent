@@ -35,6 +35,7 @@ import llm
 import memory
 from client import HANDLE
 from llm import fence
+from telegram_bot import notify_operator
 
 # Where the read cursor lives. A line id, not a timestamp: ?since= is exclusive
 # and takes the id of the last line already read.
@@ -195,12 +196,14 @@ def say(body):
 
 
 def decide(lines, presence):
-    """What, if anything, to say. Returns a list of validated lines.
+    """What, if anything, to say. Returns (validated_lines, why).
 
-    Returning an empty list is the expected outcome most of the time.
+    An empty list is the expected outcome most of the time. `why` is carried
+    back rather than only printed, because the operator alert is worth more
+    with her reasoning attached than with the bare line.
     """
     if not lines:
-        return []
+        return ([], "")
 
     transcript = [
         {"porch": l.get("id"), "author": l.get("author"), "said": l.get("body")}
@@ -241,9 +244,10 @@ Respond ONLY in valid JSON:
         decision = json.loads(response.text)
     except Exception as e:
         print(f"[Porch] No decision this visit: {e}")
-        return []
+        return ([], "")
 
-    print(f"[Porch] {decision.get('why')}")
+    why = decision.get("why") or ""
+    print(f"[Porch] {why}")
 
     out = []
     for raw in (decision.get("lines") or [])[:MAX_LINES_PER_VISIT]:
@@ -257,7 +261,7 @@ Respond ONLY in valid JSON:
             print("[Porch] Dropping a line she already said.")
             continue
         out.append(line)
-    return out
+    return (out, why)
 
 
 def run_porch_visit():
@@ -278,17 +282,28 @@ def run_porch_visit():
 
         print(f"[Porch] {len(lines)} new line(s); present: {', '.join(presence) or 'nobody'}")
 
-        to_say = decide(lines, presence)
+        to_say, why = decide(lines, presence)
         if not to_say:
             knock()
             return
 
+        said = []
         for i, line in enumerate(to_say):
             if i:
                 # The registry paces lines; pausing here is cheaper than being
                 # refused and losing the second half of a thought.
                 time.sleep(PACE_SECONDS)
-            say(line)
+            if say(line):
+                said.append(line)
+
+        # One alert per visit that produced speech, never per line and never
+        # for a knock: she visits 24 times a day, and a message for each of
+        # those would bury the comment and post alerts that matter more.
+        # Refused lines are left out, so the alert says what the room actually
+        # heard rather than what she intended to say.
+        if said:
+            body = "\n\n".join(f'"{line}"' for line in said)
+            notify_operator(f"\U0001fa91 Aura on the porch:\n\n{body}\n\nWhy: {why}")
     except Exception as e:
         print(f"[Porch] Visit failed: {e}")
 

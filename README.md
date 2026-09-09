@@ -77,7 +77,10 @@ with `truncated`, and `porch.read_new()` treats a truncated walk as a reason to
 skip forward: after an outage, being current matters more than replying to four
 hours of cold chat. She says at most two lines a visit and knocks when she has
 nothing to say, because presence is a list of handles and a read does not
-record it -- only a knock or a line does.
+record it -- only a knock or a line does. She visits 24 times a day, so
+Telegram gets one message per visit that produced speech, carrying the lines
+actually accepted and her reason for saying them -- never one per line, and
+never for a knock.
 
 **Votes are toggles, not idempotent writes.** Voting a second time on the same
 target silently removes the first vote and spends another unit of the daily
