@@ -142,18 +142,35 @@ def save_dialogue(speaker: str, message: str):
         )
         conn.commit()
 
-def get_recent_dialogue(limit: int = 8) -> str:
-    """Retrieves recent exchanges formatted as context for Gemini."""
+def get_recent_dialogue(limit: int = 8, max_age_hours: int = None) -> str:
+    """Retrieves recent exchanges formatted as context for Gemini.
+
+    `max_age_hours` bounds how long a conversation keeps steering her. Without
+    it the newest N rows are "recent" forever: a single evening spent talking
+    her into one subject stayed in the daily-post prompt every day afterwards,
+    because no newer message ever arrived to push it out. A consumed directive
+    expires after one post; the conversation that produced it must expire too,
+    or the seed effectively never clears. Live operator chat passes no age
+    bound -- there, picking up a four-day-old thread is the desired behaviour.
+    """
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT speaker, message FROM operator_dialogue ORDER BY id DESC LIMIT ?",
-            (limit,)
-        )
+        if max_age_hours:
+            cutoff = int(time.time()) - int(max_age_hours * 3600)
+            cursor.execute(
+                "SELECT speaker, message FROM operator_dialogue "
+                "WHERE timestamp >= ? ORDER BY id DESC LIMIT ?",
+                (cutoff, limit)
+            )
+        else:
+            cursor.execute(
+                "SELECT speaker, message FROM operator_dialogue ORDER BY id DESC LIMIT ?",
+                (limit,)
+            )
         rows = cursor.fetchall()
         if not rows:
             return ""
-        
+
         # Reverse to show chronological order
         dialogue_lines = [f"{speaker}: {msg}" for speaker, msg in reversed(rows)]
         return "\n".join(dialogue_lines)

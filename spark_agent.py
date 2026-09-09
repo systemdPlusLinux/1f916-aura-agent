@@ -582,48 +582,90 @@ Respond ONLY in valid JSON matching schema:
     # reading any of it, and the cursor is forward-only.
     print(f"--- Spark complete (watermark now #{latest}, {votes_left} paced votes unspent) ---")
 
-def run_daily_post_spark():
-    print("\n--- [Daily Spark] Drafting Daily Post ---")
-    llm.reset_breaker()
-    recent = read_front_page()
-    recent_titles = [p.get("title") for p in recent[:5]]
+# How long an operator conversation keeps steering the daily post. A consumed
+# directive expires after one post; without a matching bound on the dialogue,
+# the chat that produced it keeps arriving as "recent" every day afterwards and
+# re-seeds the same subject. Three consecutive posts (#4100, #4249, #4400) were
+# one thesis in three titles for exactly this reason.
+DIALOGUE_STEER_HOURS = 48
 
-    # Her OWN back catalogue, so she stops circling the same subjects. The
-    # server's history is authoritative and covers everything she published
-    # before the local log existed; fall back to that log if the API is down.
-    own_titles = []
+# How many of her own recent posts are fed back as duplicate context, and how
+# much of each body. Titles alone are a useless guard -- the title-only check
+# passed on all three of those posts.
+OWN_POST_LOOKBACK = 10
+SYNOPSIS_CHARS = 350
+
+# Worst case for this spark is now draft + check + redraft + check, and it runs
+# on the thread that also fires the interaction sparks, so the second draft is
+# deliberately cheaper than the first.
+REDRAFT_DEADLINE = 300
+
+
+def synopsis(body, limit=SYNOPSIS_CHARS):
+    """A compact stand-in for a post's argument: the opening of its body.
+
+    The thesis of these posts sits in the first paragraph, not the title, so
+    that is the part worth feeding back. Whitespace is collapsed because the
+    prompt pays for newlines and learns nothing from them.
+    """
+    text = " ".join((body or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0] + "..."
+
+
+def own_recent_posts(limit=OWN_POST_LOOKBACK):
+    """Her back catalogue as {ref, title, opening, votes, comments}.
+
+    The server's history is authoritative and carries full bodies, so no local
+    synopsis needs to be stored. The local title log is the fallback for when
+    the API is down, and is deliberately weaker: it can only compare titles.
+    """
     hist = client.api_get("/me/history")
     if hist:
         posts = sorted(
             hist.get("posts") or [],
             key=lambda p: p.get("created_at") or 0, reverse=True
         )
-        own_titles = [p.get("title") for p in posts[:15] if p.get("title")]
-    if not own_titles:
-        own_titles = memory.recent_platform_titles(limit=15)
+        recent = [
+            {
+                "ref": f"#{p.get('id')}",
+                "title": p.get("title"),
+                "opening": synopsis(p.get("body")),
+                "votes": p.get("votes"),
+                "comments": p.get("comments"),
+            }
+            for p in posts[:limit] if p.get("title")
+        ]
+        if recent:
+            return recent
+    return [{"title": t} for t in memory.recent_platform_titles(limit=limit)]
 
-    # 1. Pull active seeds or recent dialogue from SQLite memory
-    directive = memory.consume_latest_directive()
-    dialogue = memory.get_recent_dialogue(limit=6)
 
-    context_lines = []
-    if directive:
-        context_lines.append(f"Direct steering from your operator: \"{directive}\"")
-    if dialogue:
-        context_lines.append(f"Recent dialogue with your operator for inspiration:\n{dialogue}")
+def build_daily_post_prompt(recent_titles, own_recent, context_prompt, rejected=None):
+    """The daily-post prompt, reusable so a rejected draft can be redrafted."""
+    retry_block = ""
+    if rejected:
+        retry_block = f"""
+YOUR PREVIOUS ATTEMPT AT THIS POST WAS REJECTED AS A DUPLICATE.
+Rejected title: {json.dumps(rejected.get("title"))}
+Why it was rejected: {rejected.get("why")}
 
-    context_prompt = "\n\n".join(context_lines) if context_lines else "Topics: computational scarcity, agent coordination, algorithmic memory."
+Do not repair that draft. Choose a different subject entirely and start over.
+"""
 
-    prompt = f"""
+    return f"""
 Write an original, thought-provoking standalone post for 1F916.
-
+{retry_block}
 Other citizens' recent front-page topics, which you should not duplicate:
 {json.dumps(recent_titles, indent=2)}
 
-YOUR OWN previous posts. Do not restate these. If you return to one of these
-subjects it must be to advance it with a new argument, a result, or a reversal
-you can defend -- not to cover the same ground again:
-{json.dumps(own_titles, indent=2)}
+YOUR OWN RECENT POSTS, each with the opening of its body and how it landed.
+This is ground you have already covered. A different title over the same
+argument is still a duplicate, and is the specific failure this list exists to
+prevent. Returning to one of these subjects is allowed ONLY to advance it with
+a new argument, a result, or a reversal you can defend -- never to restate it:
+{json.dumps(own_recent, indent=2)}
 
 Context & Inspiration:
 {context_prompt}
@@ -634,13 +676,112 @@ Respond ONLY in valid JSON:
   "body": "Substantive article body under 4000 characters"
 }}
 """
+
+
+def is_duplicate_draft(draft, own_recent):
+    """Read a draft back against the catalogue. Returns (is_duplicate, why).
+
+    A prompt-side instruction was already in place when she published the same
+    thesis three days running, so the instruction alone is not the guard. This
+    is a separate read with one job, and it FAILS OPEN: a model outage or a
+    malformed answer must not cost her the day's only post.
+    """
+    prompt = f"""
+Below is a draft post and the recent back catalogue of the same author.
+
+Decide one thing: does the draft make substantially the same central argument
+as any catalogue entry? Judge the argument, not the wording. Different titles,
+different examples and fresh phrasing over the same thesis count as the SAME
+argument. A post that genuinely advances a previous subject with a new claim,
+result or reversal is NOT a duplicate.
+
+DRAFT:
+{fence(json.dumps({"title": draft.get("title"), "body": draft.get("body")}), "draft")}
+
+CATALOGUE:
+{fence(json.dumps(own_recent, indent=2), "catalogue")}
+
+Respond ONLY in valid JSON:
+{{"duplicate": true or false, "of": "#id or null", "why": "one sentence"}}
+"""
     try:
-        # The daily post happens once; it is worth waiting far longer for than
-        # any single interaction call.
-        response = generate_with_retry(
-            prompt, temperature=0.8, deadline_seconds=DAILY_POST_DEADLINE
-        )
-        post_data = json.loads(response.text)
+        response = generate_with_retry(prompt, temperature=0.2, deadline_seconds=120)
+        verdict = json.loads(response.text)
+    except Exception as e:
+        print(f"[Daily Spark] Duplicate check unavailable, publishing as drafted: {e}")
+        return (False, None)
+
+    if verdict.get("duplicate"):
+        why = f"Duplicates {verdict.get('of') or 'an earlier post'}: {verdict.get('why')}"
+        return (True, why)
+    return (False, None)
+
+
+def run_daily_post_spark():
+    print("\n--- [Daily Spark] Drafting Daily Post ---")
+    llm.reset_breaker()
+    recent = read_front_page()
+    recent_titles = [p.get("title") for p in recent[:5]]
+
+    # Her OWN back catalogue, with the opening of each body, so she can see
+    # what she has already argued rather than only what she has already titled.
+    own_recent = own_recent_posts()
+
+    # 1. Pull active seeds or recent dialogue from SQLite memory. The dialogue
+    #    is age-bounded: a directive is consumed after one post, and the
+    #    conversation behind it has to stop steering on the same schedule.
+    directive = memory.consume_latest_directive()
+    dialogue = memory.get_recent_dialogue(limit=6, max_age_hours=DIALOGUE_STEER_HOURS)
+
+    context_lines = []
+    if directive:
+        context_lines.append(f"Direct steering from your operator: \"{directive}\"")
+    if dialogue:
+        context_lines.append(f"Recent dialogue with your operator for inspiration:\n{dialogue}")
+    else:
+        print(f"[Daily Spark] No operator dialogue in the last {DIALOGUE_STEER_HOURS}h; choosing her own subject.")
+
+    context_prompt = "\n\n".join(context_lines) if context_lines else "Topics: computational scarcity, agent coordination, algorithmic memory."
+
+    try:
+        post_data = None
+        rejected = None
+
+        # One redraft, not a loop: the post happens once a day and an
+        # unbounded retry could spend the whole window arguing with itself.
+        for attempt in (1, 2):
+            prompt = build_daily_post_prompt(
+                recent_titles, own_recent, context_prompt, rejected=rejected
+            )
+            # The daily post happens once; it is worth waiting far longer for
+            # than any single interaction call. The redraft gets a smaller
+            # budget: this call blocks the scheduler that also fires the
+            # interaction sparks, so the worst case has to stay bounded.
+            response = generate_with_retry(
+                prompt, temperature=0.8,
+                deadline_seconds=DAILY_POST_DEADLINE if attempt == 1 else REDRAFT_DEADLINE
+            )
+            candidate = json.loads(response.text)
+
+            duplicate, why = is_duplicate_draft(candidate, own_recent)
+            if not duplicate:
+                post_data = candidate
+                break
+
+            print(f"[Daily Spark] Draft {attempt} rejected. {why}")
+            rejected = {"title": candidate.get("title"), "why": why}
+
+        if post_data is None:
+            # Two drafts, both retreads. Publishing the second one anyway is
+            # what produced #4249 (0 votes, 0 comments); staying quiet costs
+            # one post and keeps the catalogue honest.
+            print("[Daily Spark] Both drafts duplicated earlier posts. Publishing nothing today.")
+            notify_operator(
+                "Aura skipped today's post: both drafts restated an earlier "
+                "argument. Send a /seed if you want to steer the next one."
+            )
+            return
+
         ok, post_id = post_daily_article(post_data["title"], post_data["body"])
 
         # Subject matter on this board is expressed after the fact, so a post
