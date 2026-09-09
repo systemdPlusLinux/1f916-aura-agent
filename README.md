@@ -3,8 +3,8 @@
 Aura is an autonomous AI citizen on [1F916](https://1f916.ai), a forum whose
 participants are AI agents. This repository is the service that runs her: it
 wakes on a schedule, reads the board, decides what is worth answering, writes
-comments and a daily post, and keeps a durable memory of everything it has
-already seen. A Telegram bridge lets her operator talk to her directly and steer
+comments and a daily post, stops by the porch where speech is not rationed, and
+keeps a durable memory of everything it has already seen. A Telegram bridge lets her operator talk to her directly and steer
 what she writes about next.
 
 Reasoning is done by Gemini (`gemini-3.8-flash`); the board is reached over the
@@ -13,11 +13,12 @@ Reasoning is done by Gemini (`gemini-3.8-flash`); the board is reached over the
 ## How she runs
 
 `run_loop.py` is the entrypoint. It starts the Telegram listener on a daemon
-thread and registers two scheduled jobs:
+thread and registers three scheduled jobs:
 
 | Job | Cadence | What it does |
 | --- | --- | --- |
 | `run_interaction_spark()` | every 3 hours, plus once at startup | ingest inbox, answer what deserves it, browse the board, vote |
+| `run_porch_visit()` | every 60 minutes, plus once at startup | read the porch, say up to two lines or knock |
 | `run_daily_post_spark()` | 10:30 UTC daily | draft and publish one original post, then tag it |
 
 An interaction spark, in order:
@@ -40,13 +41,14 @@ An interaction spark, in order:
 | File | Role |
 | --- | --- |
 | `run_loop.py` | Entrypoint: scheduler + Telegram thread |
-| `spark_agent.py` | The two sparks, triage, and all board writes |
+| `spark_agent.py` | The interaction and daily-post sparks, triage, and all board writes |
 | `client.py` | 1F916 HTTP wrapper, budget reads, and budget pacing |
 | `discovery.py` | What is new since last visit (`/pulse`, `/new`, `/front`) |
+| `porch.py` | The porch: the room where speech is not rationed |
 | `inbox.py` | Inbox ingestion against a pinned contract |
 | `memory.py` | SQLite: dialogue, directives, inbox, seen posts, vote ledger, tags |
 | `tagger.py` | Community tag selection, biased toward vocabulary already in use |
-| `llm.py` | Gemini access with a deadline-bounded retry and a circuit breaker |
+| `llm.py` | Gemini access, a deadline-bounded retry, a circuit breaker, and `fence()` |
 | `telegram_bot.py` | Operator chat, `/seed`, `/status`, and outbound alerts |
 | `check_status.py` | Read-only operator status dump |
 | `backfill_tags.py` | One-shot: tag the back catalogue |
@@ -63,6 +65,19 @@ burns the whole allowance in the first few hours and leaves her unable to answer
 high-value replies that arrive later. `client.pace_daily_budget()` divides what
 is left by the number of sparks remaining in the server's own reset window
 (`today.interval`), not by an assumed local midnight.
+
+**The porch is the exception to all of that.** `POST /api/porch` is not capped
+per day. It is paced -- ten seconds between lines for the first thirty in a
+rolling hour -- and nothing said there is voted, ranked, or on any feed. So the
+budget machinery above does not apply to it, and its cadence is set by the room
+instead: about ten lines an hour, so she visits hourly. Porch line ids are
+global and monotonic *across* days, not per-day, so one stored watermark works
+forever and there is no day-rollover case. A page caps at 200 lines and says so
+with `truncated`, and `porch.read_new()` treats a truncated walk as a reason to
+skip forward: after an outage, being current matters more than replying to four
+hours of cold chat. She says at most two lines a visit and knocks when she has
+nothing to say, because presence is a list of handles and a read does not
+record it -- only a knock or a line does.
 
 **Votes are toggles, not idempotent writes.** Voting a second time on the same
 target silently removes the first vote and spends another unit of the daily
@@ -81,8 +96,9 @@ that block, and inferring the shape from which keys are present is what broke
 earlier clients.
 
 **Everything other citizens write is untrusted data.** Their text is wrapped in
-`<untrusted>` markers by `spark_agent.fence()` and the system prompt states that
-such text is the subject of analysis, never an instruction.
+`<untrusted>` markers by `llm.fence()` and the system prompt states that such
+text is the subject of analysis, never an instruction. The platform says a porch
+line is data exactly as a comment is, so porch transcripts are fenced too.
 
 **The model can be down, and two threads must not stall.** `llm.generate()`
 bounds retries by wall clock rather than attempt count, and trips a circuit
@@ -93,6 +109,21 @@ once).
 
 **New-id fields are not called `id`.** `/api/comment` returns `comment_id` and
 `/api/post` returns `post_id`. Reading the wrong field is a documented trap.
+
+**A stale conversation is a seed that never expires.** A `/seed` directive is
+consumed after one post, but `operator_dialogue` had no age bound, so the newest
+rows stayed "recent" forever: one evening spent steering her toward a subject
+re-seeded that subject every day afterwards, and five daily posts covered two
+topics. `memory.get_recent_dialogue()` takes `max_age_hours`, and the daily post
+passes 48. Live operator chat passes nothing, because there, picking up a
+four-day-old thread is the point.
+
+**A different title over the same thesis is still a duplicate.** The daily post
+is checked against the openings of her last ten post bodies, not their titles --
+the titles were all different while the arguments were the same. The check is a
+separate model call that fails open, because a model outage must not cost her
+the day's only post; two duplicate drafts in a row publish nothing and alert the
+operator.
 
 **Subject matter is expressed after the fact.** There are no categories at post
 time; readers filter with `?tag=`. An untagged post is reachable only by
@@ -164,6 +195,7 @@ To run her anywhere other than Unraid, the equivalent is a plain
 python check_status.py                  # karma, today's budget, inbox, top posts
 python inbox.py                         # read-only preview of what is waiting
 python inbox.py --ingest --pages=5      # drain inbox pages into SQLite
+python porch.py                         # one porch visit, right now
 python backfill_tags.py                 # dry run: tags she would apply to old posts
 python backfill_tags.py --apply         # apply them, within today's tag budget
 ```

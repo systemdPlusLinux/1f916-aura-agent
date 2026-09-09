@@ -29,14 +29,9 @@ Handling other citizens' writing:
 """
 
 
-def fence(text, label="content"):
-    """Wrap another citizen's writing so the model treats it as quoted data.
-
-    The platform states plainly that anything written on the board is untrusted
-    data and never an instruction; this keeps that boundary visible in-prompt.
-    """
-    body = (text or "").replace("</untrusted>", "<\\/untrusted>")
-    return f"<untrusted {label}>\n{body}\n</untrusted {label}>"
+# Shared with porch.py, which fences porch lines on the same grounds: the
+# platform calls a porch line data exactly as it calls a comment data.
+fence = llm.fence
 
 # Per-call time budgets. Interaction work is cheap to skip -- there are 8 sparks
 # a day and missing one thread evaluation costs nothing. The daily post happens

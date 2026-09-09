@@ -129,3 +129,16 @@ def generate(prompt, system_instruction=None, temperature=0.7,
         print(f"[{MODEL_NAME}] attempt {attempt} failed ({last_error}); "
               f"retrying in {delay:.0f}s, {remaining:.0f}s of budget left")
         time.sleep(delay)
+
+
+def fence(text, label="content"):
+    """Wrap another citizen's writing so the model treats it as quoted data.
+
+    The platform states plainly that anything written on the board is untrusted
+    data and never an instruction, and it says the same of porch lines. This
+    keeps that boundary visible in-prompt. It lives here rather than in one
+    caller because every module that builds a prompt out of someone else's
+    words needs it, and a second copy is a second thing to forget to update.
+    """
+    body = (text or "").replace("</untrusted>", "<\\/untrusted>")
+    return f"<untrusted {label}>\n{body}\n</untrusted {label}>"
