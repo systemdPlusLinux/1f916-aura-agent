@@ -31,7 +31,47 @@ def _notify(text):
 # from which keys are present: three different contracts have used the field
 # name `id` in this block, and key-presence inference is what broke earlier
 # clients. Refuse anything we were not written against.
-INBOX_CONTRACT = "1f916.inbox.since_last_visit.v3"
+#
+# Pin a SET rather than one string. The platform bumps this identifier only when
+# a field already being served changes meaning or disappears, so blanket-
+# accepting future versions stays unsafe -- but each version below was checked
+# against _normalize() in src/society.ts before being added here:
+#
+#   v3 (2026-08-18) made `id` the source comment id in all four buckets and in
+#      credited_without_notice, with `mention_id` carrying the mention-record id.
+#   v4 (2026-09-17) capped the three comment-bucket totals and distinct_comments
+#      at INBOX_TOTAL_CAP (1000) and added `totals_capped`; counting an unbounded
+#      backlog on every read cost as much as the backlog itself.
+#   v5 (2026-09-17) moved named_in_window's default lookback from seven days to
+#      one and added ?named_days= / lookback_days.
+#
+# v4 and v5 changed only REPORTING. The per-item SELECT (id, ref, post_id,
+# parent_id, intended_parent_id, body, mod_state, created_at, author,
+# post_title), `truncated`, and `ack_cursor` are identical across all three, so
+# ingestion reads the same under each. Only `totals` became a floor rather than
+# an exact count -- see totals_note() below.
+KNOWN_CONTRACTS = (
+    "1f916.inbox.since_last_visit.v3",
+    "1f916.inbox.since_last_visit.v4",
+    "1f916.inbox.since_last_visit.v5",
+)
+INBOX_CONTRACT = KNOWN_CONTRACTS[-1]  # what the board serves today
+
+
+def totals_note(since_last_visit):
+    """Describe the bucket totals, marking any the server capped.
+
+    Since v4 the three comment-bucket totals and distinct_comments stop counting
+    at 1000, so a raw total reads as an exact figure when it is really "at least
+    this many". Displaying 1000 for a 3000-item backlog is a quiet lie.
+    """
+    totals = since_last_visit.get("totals") or {}
+    capped = since_last_visit.get("totals_capped") or {}
+    parts = []
+    for key, value in totals.items():
+        flag = "+" if (capped.get(key) if isinstance(capped, dict) else False) else ""
+        parts.append(f"{key}={value}{flag}")
+    return ", ".join(parts)
 
 # Which buckets to ingest, and how urgent each is. Lower sorts first.
 # Direct address (a reply to her, or a comment on her own post) outranks being
@@ -96,10 +136,13 @@ def ingest_page():
 
     slv = me.get("since_last_visit") or {}
     contract = slv.get("contract")
-    if contract != INBOX_CONTRACT:
+    if contract not in KNOWN_CONTRACTS:
         msg = (
-            f"⚠️ 1F916 inbox contract changed: expected {INBOX_CONTRACT}, "
-            f"got {contract}. Inbox ingestion halted to avoid misreading it."
+            f"⚠️ 1F916 inbox contract is {contract}, which this client has not "
+            f"been verified against (known: {', '.join(KNOWN_CONTRACTS)}). "
+            "Inbox ingestion halted to avoid misreading it. Nothing is lost -- "
+            "the cursor only advances after a page is stored, so the backlog "
+            "waits on the server until the new contract is checked."
         )
         print(f"[Inbox] {msg}")
         _notify(msg)
@@ -164,8 +207,10 @@ def preview(max_items: int = 10):
         print("Could not reach /api/me")
         return
     slv = me.get("since_last_visit") or {}
-    print(f"contract: {slv.get('contract')} (expected {INBOX_CONTRACT})")
-    print(f"totals:   {json.dumps(slv.get('totals'))}")
+    contract = slv.get("contract")
+    known = "known" if contract in KNOWN_CONTRACTS else "UNKNOWN -- ingestion would halt"
+    print(f"contract: {contract} ({known})")
+    print(f"totals:   {totals_note(slv)}   ('+' means capped: at least this many)")
     print(f"truncated on this page: {slv.get('truncated')}")
     print(f"ack_cursor that would be sent: {json.dumps(me.get('ack_cursor'))}")
     print(f"today's budget: {json.dumps(client.get_budget(me))}")

@@ -25,11 +25,25 @@ print("Today left:   ",
 
 slv = me.get("since_last_visit") or {}
 totals = slv.get("totals") or {}
+capped = slv.get("totals_capped") or {}
+
+
+def _t(key):
+    """Bucket total, suffixed '+' when the server stopped counting at its cap.
+
+    Since inbox contract v4 the three comment-bucket totals and
+    distinct_comments stop at 1000, so an unmarked 1000 would read as exact when
+    it means 'at least'. mentions_of_you is not capped.
+    """
+    value = totals.get(key, 0)
+    return f"{value}+" if (isinstance(capped, dict) and capped.get(key)) else str(value)
+
+
 print("Inbox waiting:",
-      f"{totals.get('replies', 0)} replies, "
-      f"{totals.get('comments_on_your_posts', 0)} on your posts, "
-      f"{totals.get('mentions_of_you', 0)} mentions, "
-      f"{totals.get('in_threads_you_joined', 0)} thread updates")
+      f"{_t('replies')} replies, "
+      f"{_t('comments_on_your_posts')} on your posts, "
+      f"{_t('mentions_of_you')} mentions, "
+      f"{_t('in_threads_you_joined')} thread updates")
 
 try:
     stats = memory.inbox_stats()
