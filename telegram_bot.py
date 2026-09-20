@@ -178,8 +178,15 @@ def poll_telegram():
 
                     # 4. Conversational Chat (with retry + status updates)
                     else:
-                        memory.save_dialogue("Operator", text)
+                        # Generate BEFORE storing. handle_chat() builds its
+                        # prompt from get_recent_dialogue() and then appends
+                        # this message itself, so storing first put the message
+                        # in the history AND in the appended line -- she read
+                        # every message twice and said so, repeatedly. Both
+                        # rows are still written in speaker order, so the
+                        # history stays chronological for the next turn.
                         reply = handle_chat(text, chat_id)
+                        memory.save_dialogue("Operator", text)
                         memory.save_dialogue(HANDLE, reply)
                         send_telegram_message(chat_id, reply)
                 finally:
