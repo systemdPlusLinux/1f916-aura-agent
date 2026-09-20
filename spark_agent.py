@@ -172,6 +172,20 @@ BUCKET_FRAMING = {
 }
 
 
+# Triage sizing. The job here is only to choose which few threads earn a full
+# read, and a title plus a couple of sentences settles that -- the 400-char
+# previews this used to send made triage the single largest token line item in
+# the agent (~11k per spark, ~88k a day) to answer a question the first sentence
+# already answers.
+TRIAGE_PREVIEW_CHARS = 150
+
+# Steady state at a three-hour gap is ~38 candidates, so this is not normally
+# binding. It clips the tail after an outage, where the oldest posts are the
+# right ones to drop: the board moves ~175 posts a day and falling permanently
+# behind it is worse than skipping the cold end of a backlog.
+TRIAGE_MAX_CANDIDATES = 40
+
+
 def triage_posts(candidates, want):
     """Pick the few threads worth a full read out of everything on offer.
 
@@ -189,7 +203,7 @@ def triage_posts(candidates, want):
             "source": p.get("source"),
             "comments": p.get("comments"),
             "votes": p.get("votes"),
-            "preview": (p.get("body") or "")[:400],
+            "preview": (p.get("body") or "")[:TRIAGE_PREVIEW_CHARS],
         }
         for p in candidates
     ]
@@ -447,25 +461,41 @@ def run_interaction_spark():
         discovery.advance_watermark(pulse)
         return
 
-    # Triage the whole set cheaply, then read only the few worth reading.
+    # Candidates arrive newest-first. Clip the tail rather than paying to
+    # triage a backlog: the overflow is still marked seen below, so it is a
+    # recorded decision to skip the cold end, not a silent disappearance.
+    overflow = candidates[TRIAGE_MAX_CANDIDATES:]
+    considered = candidates[:TRIAGE_MAX_CANDIDATES]
+    if overflow:
+        print(f"[Spark] {len(candidates)} candidates; triaging the newest "
+              f"{len(considered)} and skipping {len(overflow)} older.")
+
+    # Triage the set cheaply, then read only the few worth reading.
     deep_read = min(4, max(1, comments_left + 1))
     try:
-        shortlist = triage_posts(candidates, deep_read)
+        shortlist = triage_posts(considered, deep_read)
     except Exception as e:
         print(f"[Spark] Post triage failed, using newest candidates: {e}")
-        shortlist = candidates[:deep_read]
+        shortlist = considered[:deep_read]
 
-    print(f"[Spark] Shortlisted {len(shortlist)} of {len(candidates)} candidates for a full read.")
+    print(f"[Spark] Shortlisted {len(shortlist)} of {len(considered)} candidates for a full read.")
 
     # Everything considered but not shortlisted is marked seen, so the next
-    # spark spends its attention on genuinely new material.
+    # spark spends its attention on genuinely new material. Overflow is marked
+    # too, under its own decision, so a spike shows up in seen_posts as
+    # something skipped for volume rather than judged and passed over.
     shortlisted_ids = {p.get("id") for p in shortlist}
-    for post in candidates:
+    for post in considered:
         if post.get("id") not in shortlisted_ids:
             memory.mark_seen(
                 post.get("id"), post.get("title"), post.get("author"),
                 post.get("source"), decision="triaged-out"
             )
+    for post in overflow:
+        memory.mark_seen(
+            post.get("id"), post.get("title"), post.get("author"),
+            post.get("source"), decision="overflow"
+        )
 
     posts = shortlist
     recent_dialogue = memory.get_recent_dialogue(limit=4)
