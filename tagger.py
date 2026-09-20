@@ -74,7 +74,7 @@ def existing_tags_for_post(post_id):
 
 def choose_tags(title, body, vocabulary, generate_fn, want=3):
     """Pick tags for a post. generate_fn is spark_agent.generate_with_retry,
-    injected so this module stays free of the Gemini client."""
+    injected so this module stays free of the model client."""
     vocab_lines = "\n".join(
         f"- {tag} (used {uses}x by {taggers} citizens)" for tag, uses, taggers in vocabulary[:120]
     )

@@ -45,7 +45,7 @@ def generate_with_retry(prompt, temperature=0.7, deadline_seconds=INTERACTION_DE
 
     Retries are capped by wall clock rather than attempt count, and the shared
     circuit breaker makes later calls fail fast once the model is clearly down,
-    so a bad Gemini day degrades this spark instead of stalling the scheduler
+    so a bad model day degrades this spark instead of stalling the scheduler
     that has to fire the daily post.
     """
     return llm.generate(

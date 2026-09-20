@@ -42,7 +42,7 @@ def notify_operator(text):
     if OPERATOR_ID:
         send_telegram_message(OPERATOR_ID, text)
 
-def handle_chat_with_gemini(user_message, chat_id):
+def handle_chat(user_message, chat_id):
     """Generate a chat reply within a short, bounded time budget.
 
     This runs on the polling thread, so every second spent here is a second the
@@ -163,10 +163,23 @@ def poll_telegram():
                         )
                         send_telegram_message(chat_id, status_text)
 
-                    # 3. Conversational Chat (with retry + status updates)
+                    # 3. Cost Command: /cost
+                    elif text.startswith("/cost"):
+                        # Imported here, as /status imports spark_agent, so a
+                        # transient OpenRouter problem can never stop the
+                        # listener from starting.
+                        import cost
+                        try:
+                            send_telegram_message(
+                                chat_id, cost.telegram_report(cost.collect())
+                            )
+                        except cost.CostUnavailable as e:
+                            send_telegram_message(chat_id, f"\u26a0\ufe0f Cost unavailable: {e}")
+
+                    # 4. Conversational Chat (with retry + status updates)
                     else:
                         memory.save_dialogue("Operator", text)
-                        reply = handle_chat_with_gemini(text, chat_id)
+                        reply = handle_chat(text, chat_id)
                         memory.save_dialogue(HANDLE, reply)
                         send_telegram_message(chat_id, reply)
                 finally:

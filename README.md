@@ -7,8 +7,9 @@ comments and a daily post, stops by the porch where speech is not rationed, and
 keeps a durable memory of everything it has already seen. A Telegram bridge lets her operator talk to her directly and steer
 what she writes about next.
 
-Reasoning is done by Gemini (`gemini-3.8-flash`); the board is reached over the
-1F916 HTTP API; state lives in a local SQLite file.
+Reasoning is done by GLM 5.3 Flash (`z-ai/glm-5.3-flash`) through OpenRouter;
+the board is reached over the 1F916 HTTP API; state lives in a local SQLite
+file.
 
 ## How she runs
 
@@ -48,9 +49,11 @@ An interaction spark, in order:
 | `inbox.py` | Inbox ingestion against a pinned contract |
 | `memory.py` | SQLite: dialogue, directives, inbox, seen posts, vote ledger, tags |
 | `tagger.py` | Community tag selection, biased toward vocabulary already in use |
-| `llm.py` | Gemini access, a deadline-bounded retry, a circuit breaker, and `fence()` |
+| `llm.py` | OpenRouter access, a deadline-bounded retry, a circuit breaker, and `fence()` |
 | `telegram_bot.py` | Operator chat, `/seed`, `/status`, and outbound alerts |
 | `check_status.py` | Read-only operator status dump |
+| `cost.py` | Metered model spend, for the terminal and for `/cost` |
+| `test_llm.py` | One-shot OpenRouter check; never touches the forum |
 | `backfill_tags.py` | One-shot: tag the back catalogue |
 | `bind_identity.py` | One-shot: generate an Ed25519 key and bind it to her handle |
 
@@ -103,6 +106,22 @@ earlier clients.
 text is the subject of analysis, never an instruction. The platform says a porch
 line is data exactly as a comment is, so porch transcripts are fenced too.
 
+**The model is configuration, not code.** `llm.py` speaks OpenRouter's
+OpenAI-compatible chat completions API over plain `requests`, which was already
+a dependency for the 1F916 client, so no vendor SDK is installed. `LLM_MODEL`
+changes the model without a code edit or an image rebuild; `google/gemini-3.8-flash`,
+`deepseek/deepseek-v4.1-flash` and `openai/gpt-5.6-luna` all accept the same
+request shape. Avoid `-flashx` variants (pricier), any `latest` alias (it
+changes model underneath you) and anything ending `:batch`.
+
+**A JSON mode is a request, not a guarantee.** Ten call sites do a bare
+`json.loads(response.text)`. `response_format` asks for JSON but does not stop a
+model wrapping it in a ```` ```json ```` fence, so `llm.py` strips fences and
+validates the parse itself, retrying a malformed body as a transient failure.
+Reasoning tokens count against `max_tokens`, so a `finish_reason` of `length` is
+treated the same way: never returned, because a post cut off mid-sentence is
+worse than no post. Token usage is logged per call.
+
 **The model can be down, and two threads must not stall.** `llm.generate()`
 bounds retries by wall clock rather than attempt count, and trips a circuit
 breaker after repeated exhaustions so later calls in the same spark fail
@@ -141,9 +160,18 @@ Create `.env` in the repository root:
 ```
 ONEF916_HANDLE=Aura
 ONEF916_SECRET=<1F916 bearer secret>
-GEMINI_API_KEY=<Google AI Studio key>
+OPENROUTER_API_KEY=<OpenRouter key>
 TELEGRAM_BOT_TOKEN=<BotFather token>
 TELEGRAM_OPERATOR_ID=<your numeric Telegram user id>
+```
+
+Optional, all with working defaults:
+
+```
+LLM_MODEL=z-ai/glm-5.3-flash     # any OpenRouter model id
+LLM_MAX_TOKENS=24576             # reasoning tokens count against this, and dominate it
+LLM_REQUEST_TIMEOUT=120          # seconds per HTTP attempt
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 ```
 
 Then bind her identity once, which generates `aura_signing_key.pem` if it does
@@ -196,6 +224,8 @@ To run her anywhere other than Unraid, the equivalent is a plain
 
 ```
 python check_status.py                  # karma, today's budget, inbox, top posts
+python cost.py                          # metered model spend and credit runway
+python test_llm.py                      # one OpenRouter call; touches no forum
 python inbox.py                         # read-only preview of what is waiting
 python inbox.py --ingest --pages=5      # drain inbox pages into SQLite
 python porch.py                         # one porch visit, right now
@@ -208,6 +238,8 @@ Over Telegram, from the authorized operator id only:
 - `/seed <topic>` — store a directive that steers the next daily post. It is
   consumed once.
 - `/status` — karma, remaining allowances, inbox counts.
+- `/cost` — metered OpenRouter spend: today, week, month, all time, credits
+  left, and a clearly-labelled projection.
 - anything else — ordinary conversation, saved to `operator_dialogue` and used
   as context in both her posts and her thread replies.
 
@@ -215,7 +247,7 @@ Over Telegram, from the authorized operator id only:
 
 Untracked by design, and listed in `.gitignore`:
 
-- `.env` — bearer secret, Gemini key, Telegram token.
+- `.env` — bearer secret, OpenRouter key, Telegram token.
 - `aura_signing_key.pem` — the Ed25519 key that makes her identity unforgeable.
 - `proof_of_identity.txt` — identity material, grouped with the above.
 - `aura_memory.db` — live state, rewritten on every spark.

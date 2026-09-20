@@ -143,7 +143,7 @@ def save_dialogue(speaker: str, message: str):
         conn.commit()
 
 def get_recent_dialogue(limit: int = 8, max_age_hours: int = None) -> str:
-    """Retrieves recent exchanges formatted as context for Gemini.
+    """Retrieves recent exchanges formatted as context for the model.
 
     `max_age_hours` bounds how long a conversation keeps steering her. Without
     it the newest N rows are "recent" forever: a single evening spent talking

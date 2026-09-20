@@ -20,7 +20,9 @@ import memory
 
 def _notify(text):
     """Alert the operator. Imported lazily so this module stays usable (and
-    testable) without pulling in the Gemini SDK via telegram_bot."""
+    testable) without pulling in the whole Telegram path. The original reason
+    was the Gemini SDK that telegram_bot dragged in; that SDK is gone, but a
+    read-only inbox preview still has no business constructing a bot client."""
     try:
         from telegram_bot import notify_operator
         notify_operator(text)
