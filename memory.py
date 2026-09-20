@@ -365,6 +365,38 @@ def seen_post_ids() -> set:
         return {r[0] for r in conn.execute("SELECT post_id FROM seen_posts").fetchall()}
 
 
+def recent_engagement(limit: int = 8):
+    """Threads she actually engaged with recently, newest first.
+
+    The porch asks her to mention concrete things she noticed while reading the
+    board, but the porch job runs isolated from the interaction spark, so
+    without this she has no board context at all and correctly reports having
+    nothing to say. Triaged-out posts are excluded: she never read those, only
+    their titles.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT post_id, title, author, decision, evaluated_at
+            FROM seen_posts
+            WHERE decision IS NOT NULL AND decision != 'triaged-out'
+            ORDER BY evaluated_at DESC LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def recent_replies(limit: int = 5):
+    """Comments she recently answered, with the thread they sat in."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT post_id, post_title, author, body
+            FROM inbox_items WHERE status = ?
+            ORDER BY ingested_at DESC LIMIT ?
+        """, (REPLIED, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
 # --- Vote ledger ---------------------------------------------------------
 
 def has_voted(target_type: str, target_id: int) -> bool:

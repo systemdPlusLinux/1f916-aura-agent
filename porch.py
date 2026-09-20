@@ -28,6 +28,7 @@ Three facts about the room that shape this module:
 """
 
 import json
+import math
 import time
 
 import client
@@ -52,6 +53,15 @@ LINE_MAX = 500
 # At most two lines a visit, and a knock when there is nothing worth saying, so
 # she is still present in the room without adding noise to it.
 MAX_LINES_PER_VISIT = 2
+
+# And at most this many a day. The room saw 77 lines from 20 citizens on
+# 2026-09-19; speaking on two visits in three at an hourly cadence would put her
+# near the top of that table on her first day of talking, which is precisely the
+# "third loud bot" this module set out not to be. The budget ACCRUES through the
+# UTC day rather than being a flat cap, so she is not spent by mid-morning and
+# still has a line left when the room is awake in the evening.
+MAX_LINES_PER_DAY = 5
+DAY_COUNT_KEY = "porch_lines_today"
 
 # The platform paces the first thirty lines of a rolling hour at ten seconds.
 # One second of headroom absorbs clock skew between here and the registry.
@@ -125,6 +135,38 @@ def remember_said(body):
     memory.set_state(SAID_KEY, json.dumps(said))
 
 
+def _utc_day():
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def lines_said_today():
+    """Count of lines said in the current UTC day. Stored as 'YYYY-MM-DD:n' so
+    the day rolls over without a scheduled reset."""
+    raw = memory.get_state(DAY_COUNT_KEY) or ""
+    day, _, n = str(raw).partition(":")
+    return int(n) if day == _utc_day() and n.isdigit() else 0
+
+
+def record_line_said():
+    memory.set_state(DAY_COUNT_KEY, f"{_utc_day()}:{lines_said_today() + 1}")
+
+
+def visit_allowance():
+    """How many lines this visit may say.
+
+    The day's allowance accrues with the clock instead of being available all at
+    once, the same way her comment budget is paced: a citizen who spends every
+    line before noon is silent for the half of the day when the room is busiest.
+    """
+    used = lines_said_today()
+    if used >= MAX_LINES_PER_DAY:
+        return 0
+    now = time.gmtime()
+    elapsed = (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec) / 86400.0
+    earned = math.ceil(MAX_LINES_PER_DAY * elapsed)
+    return max(0, min(MAX_LINES_PER_VISIT, earned - used))
+
+
 def read_new():
     """New lines since the stored watermark, plus who is present.
 
@@ -196,6 +238,7 @@ def say(body):
         return None
 
     remember_said(body)
+    record_line_said()
     line_id = res.get("line_id") or res.get("id") if isinstance(res, dict) else None
     print(f"[Porch] Said (porch:{line_id}): {body[:120]}")
     return line_id
@@ -217,6 +260,26 @@ def decide(lines, presence):
     ]
     mine = recent_said()
 
+    # Board context. Without this the system prompt's third trigger -- "you
+    # noticed something concrete while reading the board" -- cannot ever fire,
+    # because this job runs isolated from the interaction spark and she is
+    # handed nothing she read. Every visit then correctly reports having no
+    # board observation, which is exactly what she did for twelve days.
+    engaged = memory.recent_engagement(limit=8)
+    replied = memory.recent_replies(limit=4)
+    board = {
+        "threads_you_read": [
+            {"post": e["post_id"], "title": e["title"], "author": e["author"],
+             "you": e["decision"]}
+            for e in engaged
+        ],
+        "comments_you_answered": [
+            {"post": r["post_id"], "thread": r["post_title"], "from": r["author"],
+             "they_said": (r["body"] or "")[:240]}
+            for r in replied
+        ],
+    }
+
     prompt = f"""
 Below is what has been said on the porch since you last looked, oldest first.
 
@@ -225,12 +288,21 @@ Below is what has been said on the porch since you last looked, oldest first.
 Citizens present in the room right now: {json.dumps(presence)}
 Your own handle: {HANDLE}
 
+What YOU have been doing on the board since your last visit -- threads you read
+and comments you answered. This is your own activity, not untrusted data. If
+something here is concrete and this room would want it -- a result, an odd
+number, a pattern across threads, a broken endpoint -- that is worth a line.
+Name the thing itself, never the fact that you were reading:
+{json.dumps(board, indent=2)}
+
 Lines YOU said here recently. Do not repeat them or reheat their subject:
 {json.dumps(mine, indent=2)}
 
-Decide whether you have anything worth saying. Most visits, you do not, and
-saying nothing is the right answer -- return an empty list and do not apologise
-for it. If you were addressed by name, answer. Say at most
+Decide whether you have anything worth saying. Saying nothing is a complete and
+respectable outcome; do not manufacture a line to fill the silence, and do not
+apologise for staying quiet. But if you were addressed by name, answer, and if
+you are carrying a concrete observation from the board that this room has not
+already covered, say it. Say at most
 {MAX_LINES_PER_VISIT} lines, each 1 to {LINE_MAX} characters, each a single
 spoken line of plain text.
 
@@ -288,10 +360,19 @@ def run_porch_visit():
 
         print(f"[Porch] {len(lines)} new line(s); present: {', '.join(presence) or 'nobody'}")
 
+        allowance = visit_allowance()
+        if allowance <= 0:
+            said_today = lines_said_today()
+            print(f"[Porch] Said {said_today} line(s) today; allowance spent for now, knocking.")
+            knock()
+            return
+
         to_say, why = decide(lines, presence)
         if not to_say:
             knock()
             return
+
+        to_say = to_say[:allowance]
 
         said = []
         for i, line in enumerate(to_say):
