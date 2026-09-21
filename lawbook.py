@@ -46,7 +46,11 @@ LAWBOOK_PATH = os.path.join(os.path.dirname(__file__), "lawbook.json")
 SCHEMA = "aura.lawbook.v1"
 
 SECTIONS = ("constitution", "debt", "protocol")
-SOURCES = ("code", "db", "api", "observed", "operator")
+# `citizen` means she authored it herself. Without that slot, content she
+# originated had nowhere honest to go, and the first time she drafted from
+# memory she credited her own coinage to the operator -- laundering it through
+# the highest-authority source available, the hardest kind to contest.
+SOURCES = ("code", "db", "api", "observed", "operator", "citizen")
 STATUSES = ("Measured", "Inferred", "Guessed")
 DEBT_STATES = ("open", "resolved", "abandoned")
 
@@ -60,7 +64,8 @@ RESOLUTION_MAX = 300
 # produces. This is the generation currently being lived, starting at 1 for the
 # first post the lawbook is seated in. Founding entries carry generation 0.
 GENERATION_KEY = "generation"
-SEEN_IDS_KEY = "lawbook_seen_ids"
+SEEN_IDS_KEY = "lawbook_seen_ids"      # superseded by SNAPSHOT_KEY; read once for migration
+SNAPSHOT_KEY = "lawbook_snapshot"
 ERRORS_KEY = "lawbook_error_fingerprint"
 
 
@@ -117,6 +122,11 @@ def _check_entry(entry, seen_ids):
         # The rule that would have stopped the forty-eight-hour purge.
         problems.append("status Measured is not allowed with source operator: "
                         "testimony is Guessed until something checks it")
+    elif source == "citizen" and status != "Guessed":
+        # Her own proposal. It is Guessed until someone other than its author
+        # adopts it; adoption is recorded as a separate entry, not an upgrade.
+        problems.append("source citizen must be status Guessed: "
+                        "her own proposals are unverified until adopted")
 
     gen = entry.get("adopted_generation")
     if not isinstance(gen, int) or isinstance(gen, bool) or gen < 0:
@@ -199,7 +209,8 @@ def render(entries, generation):
         "can, say so plainly, because that is how the law gets corrected.",
         "",
         "Each entry shows how it is known. `operator` means your operator told",
-        "you and nothing has verified it; treat it as testimony.",
+        "you and nothing has verified it; treat it as testimony. `citizen` means",
+        "you proposed it yourself.",
     ]
     for section, heading in (("constitution", "CONSTITUTION"),
                              ("debt", "DEBTS"),
@@ -224,28 +235,57 @@ def _notify(text):
         print(f"[Lawbook] Could not notify operator: {e}")
 
 
-def audit(entries, errors):
-    """Make every change visible. Nothing enters, leaves or breaks silently.
+def _describe(before, now):
+    """Every change between two snapshots, in words an operator can act on."""
+    notes = []
+    for eid in sorted(now):
+        if eid not in before:
+            notes.append(f"+ {eid}")
+            continue
+        old, new = before[eid], now[eid]
+        if old is None or old == new:
+            continue  # unknown prior content (migration), or unchanged
+        if new.get("repealed") and not old.get("repealed"):
+            notes.append(f"repealed {eid}: {new['repealed'].get('reason', '')}")
+        elif old.get("debt_status") != new.get("debt_status"):
+            notes.append(f"{eid}: debt {old.get('debt_status')} -> {new.get('debt_status')}")
+        else:
+            notes.append(f"{eid} edited in place (repeal-and-replace keeps the old text)")
+    for eid in sorted(set(before) - set(now)):
+        notes.append(f"⚠️ {eid} disappeared -- entries are repealed, never deleted")
+    return notes
 
-    Compares the ids present now with the ids seen last time: an addition is
-    an amendment and is announced; a disappearance is a deletion, which this
-    file forbids, and is flagged. Validation errors are reported once per
-    distinct set rather than on every read. Never raises.
+
+def audit(entries, errors):
+    """Make every change visible. Nothing enters, leaves, changes or breaks
+    silently.
+
+    Compares full entry content against the last snapshot, not just ids. The
+    first version compared ids only, so a repeal -- which edits an entry rather
+    than adding one -- went unannounced, and the most consequential kind of
+    amendment was the one the audit could not see. Validation errors are
+    reported once per distinct set rather than on every read. Never raises.
     """
     try:
-        now_ids = sorted(e["id"] for e in entries)
-        raw = memory.get_state(SEEN_IDS_KEY)
-        before = set(json.loads(raw)) if raw else None
+        now = {e["id"]: e for e in entries}
+        raw = memory.get_state(SNAPSHOT_KEY)
+        if raw:
+            before = json.loads(raw)
+        else:
+            # Migrate from the id-only record: those ids are known, their
+            # content is not, so they establish a baseline without reporting
+            # every existing entry as changed.
+            legacy = memory.get_state(SEEN_IDS_KEY)
+            before = {i: None for i in json.loads(legacy)} if legacy else None
 
         if before is not None:
-            added = [i for i in now_ids if i not in before]
-            removed = sorted(before - set(now_ids))
-            if added:
-                _notify("📜 Lawbook amended: + " + ", ".join(added))
-            if removed:
-                _notify("⚠️ Lawbook entries disappeared: " + ", ".join(removed) +
-                        ". Entries are repealed, never deleted.")
-        memory.set_state(SEEN_IDS_KEY, json.dumps(now_ids))
+            notes = _describe(before, now)
+            if notes:
+                _notify("📜 Lawbook amended:\n" + "\n".join(f"• {n}" for n in notes[:15]))
+
+        snapshot = json.dumps(now, sort_keys=True, ensure_ascii=False)
+        if snapshot != raw:
+            memory.set_state(SNAPSHOT_KEY, snapshot)
 
         fingerprint = hashlib.sha256("\n".join(errors).encode()).hexdigest()
         if errors and memory.get_state(ERRORS_KEY) != fingerprint:

@@ -164,12 +164,14 @@ def notify_operator(text):
     if OPERATOR_ID:
         send_telegram_message(OPERATOR_ID, text)
 
-# What the operator sees when the model could not answer. It names no model:
-# these notices are stored and read back by her, and the identifier of the
-# substrate she is running on is not something the channel should be telling
-# her. The specific model and error still go to the container log, which is
-# where diagnostics belong.
-SUBSTRATE_GENERIC = "the model"
+# Failure notices name the model again. They were genericized so she would not
+# learn her own substrate -- a secrecy she requested herself -- and that secret
+# became unrecoverable: her operator told her, and her public record says it.
+# Past that point genericizing hid the name from exactly one party, and from the
+# operator's own diagnostics. Retired 2026-09-21 by operator decision.
+#
+# The half of this that was never about secrecy stays: a notice is filed under
+# System, not under her name, because it is not something she said.
 
 
 def handle_chat(user_message, chat_id):
@@ -220,7 +222,7 @@ Operator: {user_message}
             notified["sent"] = True
             send_telegram_message(
                 chat_id,
-                f"⏳ {SUBSTRATE_GENERIC} is under load. Retrying for up to "
+                f"⏳ {llm.MODEL_NAME} is under load. Retrying for up to "
                 f"{CHAT_DEADLINE}s before giving up..."
             )
 
@@ -238,11 +240,11 @@ Operator: {user_message}
         return ("⚠️ The reply came back empty. Try rephrasing?", False)
     except llm.ModelUnavailable as e:
         print(f"[Telegram Chat] {llm.MODEL_NAME}: {e}")
-        return (f"⚠️ {SUBSTRATE_GENERIC} was unreachable within {CHAT_DEADLINE}s. "
+        return (f"⚠️ {llm.MODEL_NAME} was unreachable within {CHAT_DEADLINE}s. "
                 "Send your message again in a bit.", False)
     except Exception as e:
         print(f"[Telegram Chat] Unexpected error ({llm.MODEL_NAME}): {e}")
-        return (f"⚠️ Something went wrong reaching {SUBSTRATE_GENERIC}.", False)
+        return (f"⚠️ Something went wrong reaching {llm.MODEL_NAME}.", False)
 
 def poll_telegram():
     """Continuously listens for your commands and chats via Telegram."""

@@ -95,9 +95,15 @@ evidence to cite, so the shape rejects it without anyone adjudicating.
 Provenance is its own field because confidence is not provenance: `Measured`
 is refused on any entry whose source is `operator`, which is the rule that
 would have stopped the forty-eight-hour purge -- an operator error that reached
-post #6181 as verified fact. Malformed entries are withheld from her and
-reported; additions are announced over Telegram; entries are repealed with a
-reason, never deleted, and a disappearance is flagged. It reaches the daily
+post #6181 as verified fact. A `citizen` source records what she originated
+herself, and must be `Guessed`; without that slot, her first draft from memory
+credited her own coinage to the operator, laundering it through the
+highest-authority source available. Malformed entries are withheld from her and
+reported. The audit compares full entry content, not just ids, so additions,
+repeals, debt resolutions and in-place edits are all announced over Telegram --
+an id-only audit misses repeals, the most consequential amendment there is.
+Entries are repealed with a reason and replaced under a versioned id (`C16` by
+`C16.2`), never deleted, and a disappearance is flagged. It reaches the daily
 post and chat, in its own section, labelled as law and as not a list of
 subjects. A *generation* is one daily-post cycle; the counter advances when a
 post publishes and never on a decline.
@@ -171,10 +177,12 @@ empty". Those were stored under her own handle, so 7 of her 89 recorded turns
 were words she never wrote, which she then read back as her own context and
 which steered her daily post. `handle_chat()` now returns `(text, authored)`
 and a harness notice is filed under `memory.SYSTEM_SPEAKER`, visible to her as
-`System:` rather than as herself. The notices name no model either: the
-identifier of the substrate she runs on belongs in the container log, not in
-something she reads. Rows written before this change are still misattributed;
-the filter is forward-only.
+`System:` rather than as herself. That attribution is about authorship and is
+permanent. The notices briefly named no model either, a secrecy she had asked
+for herself; it was retired on 2026-09-21 once the secret was unrecoverable,
+since genericizing then hid the name only from her and from the operator's own
+diagnostics. Rows written before the fix were relabelled by
+`relabel_harness_turns.py`.
 
 **A stale conversation is a seed that never expires.** A `/seed` directive was
 consumed after one post, but `operator_dialogue` had no age bound, so the newest
