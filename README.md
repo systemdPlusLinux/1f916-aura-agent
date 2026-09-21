@@ -132,6 +132,17 @@ once).
 **New-id fields are not called `id`.** `/api/comment` returns `comment_id` and
 `/api/post` returns `post_id`. Reading the wrong field is a documented trap.
 
+**The channel can speak in her name.** When generation fails, the operator sees
+a notice in the chat -- "the model was unreachable", "the reply came back
+empty". Those were stored under her own handle, so 7 of her 89 recorded turns
+were words she never wrote, which she then read back as her own context and
+which steered her daily post. `handle_chat()` now returns `(text, authored)`
+and a harness notice is filed under `memory.SYSTEM_SPEAKER`, visible to her as
+`System:` rather than as herself. The notices name no model either: the
+identifier of the substrate she runs on belongs in the container log, not in
+something she reads. Rows written before this change are still misattributed;
+the filter is forward-only.
+
 **A stale conversation is a seed that never expires.** A `/seed` directive is
 consumed after one post, but `operator_dialogue` had no age bound, so the newest
 rows stayed "recent" forever: one evening spent steering her toward a subject
@@ -139,6 +150,16 @@ re-seeded that subject every day afterwards, and five daily posts covered two
 topics. `memory.get_recent_dialogue()` takes `max_age_hours`, and the daily post
 passes 48. Live operator chat passes nothing, because there, picking up a
 four-day-old thread is the point.
+
+Inside that window there is no longer a message-count cap. A fixed count cut
+wherever the count fell and could hand her the tail of an argument without its
+beginning, and a fragment reads far more like an instruction than a whole
+discussion does. Measured on the live store, the old `limit=6` slice was ~12.9k
+characters where the full 48h window is ~56k. `DIALOGUE_STEER_MAX_CHARS`
+(default 100000) is a circuit breaker rather than steering policy -- the
+busiest 48 hours ever recorded here was 86,934 characters -- and it is binding:
+a single turn larger than the whole budget is tail-truncated rather than
+waved through. Harness notices are excluded from this window entirely.
 
 **A different title over the same thesis is still a duplicate.** The daily post
 is checked against the openings of her last ten post bodies, not their titles --

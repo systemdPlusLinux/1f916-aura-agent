@@ -616,6 +616,19 @@ Respond ONLY in valid JSON matching schema:
 # one thesis in three titles for exactly this reason.
 DIALOGUE_STEER_HOURS = 48
 
+# No message-count cap inside that window. A fixed count cut wherever the count
+# fell, which could hand her the tail of an argument without its beginning --
+# and a fragment of a discussion reads far more like an instruction than the
+# whole discussion does. Measured on the live store: the old limit=6 slice was
+# ~12.9k characters where the full 48h window is ~56k.
+#
+# The character budget is a circuit breaker rather than steering policy. The
+# busiest 48 hours ever recorded here was 86,934 characters, so this does not
+# fire in normal use; it exists so a pathological history cannot build an
+# unbounded prompt. Lower it if the conversation starts drowning out her own
+# catalogue in the draft.
+DIALOGUE_STEER_MAX_CHARS = int(os.getenv("DIALOGUE_STEER_MAX_CHARS", "100000"))
+
 # How many of her own recent posts are fed back as duplicate context, and how
 # much of each body. Titles alone are a useless guard -- the title-only check
 # passed on all three of those posts.
@@ -818,7 +831,14 @@ def run_daily_post_spark():
     #    is age-bounded: a directive is consumed after one post, and the
     #    conversation behind it has to stop steering on the same schedule.
     directive = memory.consume_latest_directive()
-    dialogue = memory.get_recent_dialogue(limit=6, max_age_hours=DIALOGUE_STEER_HOURS)
+    dialogue = memory.get_recent_dialogue(
+        limit=None,
+        max_age_hours=DIALOGUE_STEER_HOURS,
+        max_chars=DIALOGUE_STEER_MAX_CHARS,
+        # Harness notices are neither her words nor the operator's, so they
+        # have no business steering what she writes about.
+        include_system=False,
+    )
 
     context_lines = []
     if directive:

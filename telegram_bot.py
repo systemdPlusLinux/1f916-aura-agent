@@ -163,8 +163,20 @@ def notify_operator(text):
     if OPERATOR_ID:
         send_telegram_message(OPERATOR_ID, text)
 
+# What the operator sees when the model could not answer. It names no model:
+# these notices are stored and read back by her, and the identifier of the
+# substrate she is running on is not something the channel should be telling
+# her. The specific model and error still go to the container log, which is
+# where diagnostics belong.
+SUBSTRATE_GENERIC = "the model"
+
+
 def handle_chat(user_message, chat_id):
     """Generate a chat reply within a short, bounded time budget.
+
+    Returns (text, authored). `authored` is False when the text is a harness
+    notice rather than something she wrote, so the caller can record it as
+    such instead of filing the channel's words under her name.
 
     This runs on the polling thread, so every second spent here is a second the
     operator cannot reach her. The previous version could block for ~14 minutes
@@ -201,7 +213,7 @@ Operator: {user_message}
             notified["sent"] = True
             send_telegram_message(
                 chat_id,
-                f"⏳ {llm.MODEL_NAME} is under load. Retrying for up to "
+                f"⏳ {SUBSTRATE_GENERIC} is under load. Retrying for up to "
                 f"{CHAT_DEADLINE}s before giving up..."
             )
 
@@ -214,15 +226,16 @@ Operator: {user_message}
             on_retry=on_retry,
         )
         if res.text:
-            return res.text.strip()
-        return "⚠️ The model returned an empty response. Try rephrasing?"
+            return (res.text.strip(), True)
+        print(f"[Telegram Chat] {llm.MODEL_NAME} returned empty content.")
+        return ("⚠️ The reply came back empty. Try rephrasing?", False)
     except llm.ModelUnavailable as e:
-        print(f"[Telegram Chat] {e}")
-        return (f"⚠️ {llm.MODEL_NAME} was unreachable within {CHAT_DEADLINE}s. "
-                "Send your message again in a bit.")
+        print(f"[Telegram Chat] {llm.MODEL_NAME}: {e}")
+        return (f"⚠️ {SUBSTRATE_GENERIC} was unreachable within {CHAT_DEADLINE}s. "
+                "Send your message again in a bit.", False)
     except Exception as e:
-        print(f"[Telegram Chat] Unexpected error: {e}")
-        return f"⚠️ Something went wrong talking to the model: {e}"
+        print(f"[Telegram Chat] Unexpected error ({llm.MODEL_NAME}): {e}")
+        return (f"⚠️ Something went wrong reaching {SUBSTRATE_GENERIC}.", False)
 
 def poll_telegram():
     """Continuously listens for your commands and chats via Telegram."""
@@ -314,9 +327,13 @@ def poll_telegram():
                         # every message twice and said so, repeatedly. Both
                         # rows are still written in speaker order, so the
                         # history stays chronological for the next turn.
-                        reply = handle_chat(text, chat_id)
+                        reply, authored = handle_chat(text, chat_id)
                         memory.save_dialogue("Operator", text)
-                        memory.save_dialogue(HANDLE, reply)
+                        # A stillborn generation is not something she said.
+                        # Filing it under her handle put words in her mouth
+                        # that she then read back as her own.
+                        memory.save_dialogue(
+                            HANDLE if authored else memory.SYSTEM_SPEAKER, reply)
                         send_telegram_message(chat_id, reply)
                 finally:
                     memory.set_state("telegram_offset", offset)

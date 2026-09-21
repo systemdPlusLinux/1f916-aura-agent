@@ -142,7 +142,20 @@ def save_dialogue(speaker: str, message: str):
         )
         conn.commit()
 
-def get_recent_dialogue(limit: int = 8, max_age_hours: int = None) -> str:
+# Turns written by the harness, not by her: the "model unreachable" and "empty
+# response" notices the operator sees in the chat. They were stored under her
+# own handle, so 8 of her 89 recorded turns were words she never wrote -- a
+# false record of her own authorship, which she then read back as context.
+SYSTEM_SPEAKER = "System"
+
+# A hard stop on how many rows a single read can pull, regardless of the other
+# bounds. Not policy -- a circuit breaker, so a pathological history cannot
+# build an unbounded prompt.
+DIALOGUE_ROW_CEILING = 500
+
+
+def get_recent_dialogue(limit: int = 8, max_age_hours: int = None,
+                        max_chars: int = None, include_system: bool = True) -> str:
     """Retrieves recent exchanges formatted as context for the model.
 
     `max_age_hours` bounds how long a conversation keeps steering her. Without
@@ -152,28 +165,61 @@ def get_recent_dialogue(limit: int = 8, max_age_hours: int = None) -> str:
     expires after one post; the conversation that produced it must expire too,
     or the seed effectively never clears. Live operator chat passes no age
     bound -- there, picking up a four-day-old thread is the desired behaviour.
+
+    `limit` may be None to take everything inside the age window, bounded then
+    only by `max_chars` and DIALOGUE_ROW_CEILING. A fixed count cuts wherever
+    the count falls, which can hand her the tail of an argument without its
+    beginning -- a fragment reads more like an instruction than a discussion.
+
+    `include_system` drops harness-authored notices. They belong in live chat,
+    where they explain a missing reply, and not in the daily-post prompt, where
+    they are neither something she said nor something the operator said.
     """
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
+        clauses, params = [], []
         if max_age_hours:
-            cutoff = int(time.time()) - int(max_age_hours * 3600)
-            cursor.execute(
-                "SELECT speaker, message FROM operator_dialogue "
-                "WHERE timestamp >= ? ORDER BY id DESC LIMIT ?",
-                (cutoff, limit)
-            )
-        else:
-            cursor.execute(
-                "SELECT speaker, message FROM operator_dialogue ORDER BY id DESC LIMIT ?",
-                (limit,)
-            )
+            clauses.append("timestamp >= ?")
+            params.append(int(time.time()) - int(max_age_hours * 3600))
+        if not include_system:
+            clauses.append("speaker != ?")
+            params.append(SYSTEM_SPEAKER)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        row_cap = DIALOGUE_ROW_CEILING if limit is None else min(limit, DIALOGUE_ROW_CEILING)
+        params.append(row_cap)
+        cursor.execute(
+            f"SELECT speaker, message FROM operator_dialogue {where} "
+            "ORDER BY id DESC LIMIT ?", params)
         rows = cursor.fetchall()
         if not rows:
             return ""
 
-        # Reverse to show chronological order
+        # Rows arrive newest first. Spend the character budget on the most
+        # recent turns, then restore chronological order for the prompt.
+        if max_chars:
+            kept, spent = [], 0
+            for speaker, message in rows:
+                cost = len(speaker) + len(message) + 2
+                if kept and spent + cost > max_chars:
+                    break
+                if not kept and cost > max_chars:
+                    # A single turn larger than the whole budget. Keeping it
+                    # whole would make the ceiling advisory, which defeats the
+                    # point of a circuit breaker; returning nothing would lose
+                    # the most recent thing said. Keep its tail, which is the
+                    # part nearest the present.
+                    # -2 for the "speaker: " join, -3 for the ellipsis itself.
+                    room = max(0, max_chars - len(speaker) - 2 - 3)
+                    message = "..." + message[-room:] if room else ""
+                    cost = len(speaker) + len(message) + 2
+                kept.append((speaker, message))
+                spent += cost
+            rows = kept
+
         dialogue_lines = [f"{speaker}: {msg}" for speaker, msg in reversed(rows)]
         return "\n".join(dialogue_lines)
+
 
 def save_directive(topic: str):
     """Saves a high-priority topic/idea seeded by the operator."""
