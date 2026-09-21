@@ -222,7 +222,7 @@ when you are genuinely running long, and never mid-argument. Without a marker
 the split falls back to the last paragraph break that fits, which is a guess
 about your structure rather than a decision.
 
-Operator: {user_message}
+[{memory._stamp(facts.now()[0])}] Operator: {user_message}
 {HANDLE}:"""
 
     notified = {"sent": False}

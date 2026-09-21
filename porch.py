@@ -268,7 +268,8 @@ def decide(lines, presence):
         return ([], "")
 
     transcript = [
-        {"porch": l.get("id"), "author": l.get("author"), "said": l.get("body")}
+        {"porch": l.get("id"), "at": memory._stamp((l.get("created_at") or 0) / 1000),
+         "author": l.get("author"), "said": l.get("body")}
         for l in lines
     ]
     mine = recent_said()

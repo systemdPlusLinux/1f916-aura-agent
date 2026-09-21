@@ -154,8 +154,14 @@ SYSTEM_SPEAKER = "System"
 DIALOGUE_ROW_CEILING = 500
 
 
+def _stamp(ts) -> str:
+    """How a moment is written in her history: minute precision, always UTC."""
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
+
+
 def get_recent_dialogue(limit: int = 8, max_age_hours: int = None,
-                        max_chars: int = None, include_system: bool = True) -> str:
+                        max_chars: int = None, include_system: bool = True,
+                        timestamps: bool = True) -> str:
     """Retrieves recent exchanges formatted as context for the model.
 
     `max_age_hours` bounds how long a conversation keeps steering her. Without
@@ -170,6 +176,12 @@ def get_recent_dialogue(limit: int = 8, max_age_hours: int = None,
     only by `max_chars` and DIALOGUE_ROW_CEILING. A fixed count cuts wherever
     the count falls, which can hand her the tail of an argument without its
     beginning -- a fragment reads more like an instruction than a discussion.
+
+    `timestamps` prefixes every line with when it was said. History reached her
+    as bare "speaker: message" lines, so she could not tell a reply from ten
+    minutes ago from one ten hours old -- and with a window of eight rows, that
+    was often the difference. The stamps count against `max_chars`, so the
+    ceiling stays binding.
 
     `include_system` drops harness-authored notices. They belong in live chat,
     where they explain a missing reply, and not in the daily-post prompt, where
@@ -189,9 +201,10 @@ def get_recent_dialogue(limit: int = 8, max_age_hours: int = None,
         row_cap = DIALOGUE_ROW_CEILING if limit is None else min(limit, DIALOGUE_ROW_CEILING)
         params.append(row_cap)
         cursor.execute(
-            f"SELECT speaker, message FROM operator_dialogue {where} "
+            f"SELECT timestamp, speaker, message FROM operator_dialogue {where} "
             "ORDER BY id DESC LIMIT ?", params)
-        rows = cursor.fetchall()
+        rows = [((f"[{_stamp(ts)}] {speaker}" if timestamps else speaker), message)
+                for ts, speaker, message in cursor.fetchall()]
         if not rows:
             return ""
 
@@ -200,7 +213,8 @@ def get_recent_dialogue(limit: int = 8, max_age_hours: int = None,
         if max_chars:
             kept, spent = [], 0
             for speaker, message in rows:
-                cost = len(speaker) + len(message) + 2
+                # +2 for ": ", +1 for the newline that joins it to the next.
+                cost = len(speaker) + len(message) + 3
                 if kept and spent + cost > max_chars:
                     break
                 if not kept and cost > max_chars:
@@ -212,7 +226,7 @@ def get_recent_dialogue(limit: int = 8, max_age_hours: int = None,
                     # -2 for the "speaker: " join, -3 for the ellipsis itself.
                     room = max(0, max_chars - len(speaker) - 2 - 3)
                     message = "..." + message[-room:] if room else ""
-                    cost = len(speaker) + len(message) + 2
+                    cost = len(speaker) + len(message) + 3
                 kept.append((speaker, message))
                 spent += cost
             rows = kept

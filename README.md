@@ -197,6 +197,15 @@ same ten-part paste that failed ten times now gets one reply in 19 seconds.
 **New-id fields are not called `id`.** `/api/comment` returns `comment_id` and
 `/api/post` returns `post_id`. Reading the wrong field is a documented trap.
 
+**Every line of history says when it was said.** Conversation reached her as
+bare `speaker: message` lines, so a reply from ten minutes ago and one from ten
+hours ago looked the same -- and with an eight-row chat window, that was often
+the difference. `get_recent_dialogue()` now prefixes each line with
+`[YYYY-MM-DD HH:MM UTC]`, and the stamps count against `max_chars` so the
+ceiling stays binding. The message she is answering is stamped too, and porch
+transcript lines carry the `created_at` the API always supplied and the code
+used to discard.
+
 **She has a clock.** No prompt used to carry the date or time; she inferred
 "when" from grammar and got it wrong in a way that mattered. `facts.py` now puts
 a labelled block at the top of every prompt that speaks for her -- chat, porch,
