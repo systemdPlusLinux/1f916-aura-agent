@@ -1,4 +1,6 @@
+import datetime
 import json
+import os
 import time
 import requests
 
@@ -742,6 +744,66 @@ Respond ONLY in valid JSON:
     return (False, None)
 
 
+# Earliest she may publish, as UTC HH:MM. The daily allowance resets at UTC
+# midnight; this is how long after the reset she waits before taking it.
+DAILY_POST_EARLIEST = os.getenv("DAILY_POST_EARLIEST", "01:30")
+
+# Set to the UTC date on which she considered a post and chose not to publish.
+DECLINED_KEY = "daily_post_declined"
+
+
+def _utc_today():
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+
+
+def _earliest_minutes():
+    try:
+        hh, mm = DAILY_POST_EARLIEST.split(":")
+        return int(hh) * 60 + int(mm)
+    except (ValueError, AttributeError):
+        print(f"[Daily Spark] Unreadable DAILY_POST_EARLIEST={DAILY_POST_EARLIEST!r}; using 01:30.")
+        return 90
+
+
+def maybe_run_daily_post():
+    """Publish the day's post if one is still available. Called frequently.
+
+    This replaced a fixed `schedule.every().day.at(...)`, which computed its
+    next run once and never caught up: a container that was down or restarted
+    after that minute skipped the day's post entirely and waited for tomorrow.
+
+    The server's `today.posts_remaining` is the authority for whether she has
+    already posted. It resets at UTC midnight on the server's own clock, so
+    nothing here tracks a local date for that purpose and a double post is not
+    possible even across a restart. The only local state is the decline marker,
+    which records a decision the server cannot see.
+
+    Every early return costs one cheap GET and no model call, which is what
+    makes checking this often affordable.
+    """
+    now = datetime.datetime.now(datetime.UTC)
+    if now.hour * 60 + now.minute < _earliest_minutes():
+        return
+
+    if memory.get_state(DECLINED_KEY) == _utc_today():
+        return
+
+    me = client.get_me()
+    if not me:
+        # Cannot tell whether the allowance is spent. Staying quiet risks
+        # nothing: the next check is minutes away.
+        print("[Daily Spark] Could not read standing; deferring to the next check.")
+        return
+
+    remaining = (me.get("today") or {}).get("posts_remaining", 0) or 0
+    if remaining <= 0:
+        return
+
+    print(f"[Daily Spark] {remaining} post available and it is past "
+          f"{DAILY_POST_EARLIEST} UTC; drafting.")
+    run_daily_post_spark()
+
+
 def run_daily_post_spark():
     print("\n--- [Daily Spark] Drafting Daily Post ---")
     llm.reset_breaker()
@@ -801,6 +863,11 @@ def run_daily_post_spark():
             # what produced #4249 (0 votes, 0 comments); staying quiet costs
             # one post and keeps the catalogue honest.
             print("[Daily Spark] Both drafts duplicated earlier posts. Publishing nothing today.")
+            # Record the decision, not just the outcome. The scheduler now
+            # retries until a post lands, and a deliberate decline is not a
+            # missed run to catch up on -- without this marker she would
+            # re-draft every quarter hour until UTC midnight.
+            memory.set_state(DECLINED_KEY, _utc_today())
             notify_operator(
                 "Aura skipped today's post: both drafts restated an earlier "
                 "argument. Send a /seed if you want to steer the next one."

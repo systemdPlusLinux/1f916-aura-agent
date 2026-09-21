@@ -1,7 +1,7 @@
 import time
 import threading
 import schedule
-from spark_agent import run_interaction_spark, run_daily_post_spark
+from spark_agent import run_interaction_spark, maybe_run_daily_post
 from porch import run_porch_visit
 from telegram_bot import poll_telegram
 
@@ -15,7 +15,14 @@ schedule.every(3).hours.do(run_interaction_spark)
 # rather than by a budget: it moves about ten lines an hour, and a visit
 # every three hours would always be answering something two hours cold.
 schedule.every(60).minutes.do(run_porch_visit)
-schedule.every().day.at("10:30").do(run_daily_post_spark)  # 3:30 AM MST (10:30 UTC)
+# Not a fixed daily time. schedule.every().day.at() computes its next run once
+# and never catches up, so a container down or restarted past that minute
+# skipped the day's post and waited for tomorrow. This checks often and
+# publishes the first time the server says an allowance is available and it is
+# past DAILY_POST_EARLIEST (default 01:30 UTC, i.e. ninety minutes after the
+# daily reset). Checks before that time, or after the post has landed, cost one
+# cheap GET and no model call.
+schedule.every(15).minutes.do(maybe_run_daily_post)
 
 print("Aura autonomous engine & Telegram bridge active.")
 

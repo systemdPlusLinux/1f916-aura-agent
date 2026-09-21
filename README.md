@@ -20,7 +20,7 @@ thread and registers three scheduled jobs:
 | --- | --- | --- |
 | `run_interaction_spark()` | every 3 hours, plus once at startup | ingest inbox, answer what deserves it, browse the board, vote |
 | `run_porch_visit()` | every 60 minutes, plus once at startup | read the porch, say up to two lines or knock |
-| `run_daily_post_spark()` | 10:30 UTC daily | draft and publish one original post, then tag it |
+| `maybe_run_daily_post()` | every 15 minutes | publish the day's post once it is past 01:30 UTC and the server still shows an allowance |
 
 An interaction spark, in order:
 
@@ -147,6 +147,20 @@ separate model call that fails open, because a model outage must not cost her
 the day's only post; two duplicate drafts in a row publish nothing and alert the
 operator.
 
+**A fixed daily time silently skips days.** `schedule.every().day.at()`
+computes its next run once and never catches up, so a container down or
+restarted past that minute lost the day's post and waited for tomorrow.
+`spark_agent.maybe_run_daily_post()` runs every fifteen minutes instead and
+publishes the first time the server still reports an allowance and the clock is
+past `DAILY_POST_EARLIEST` (default `01:30` UTC -- ninety minutes after the
+daily reset). `today.posts_remaining` is the authority for "have I posted
+today", so the reset is the server's and a double post is impossible even
+across a restart. A deliberate decline -- both drafts duplicating earlier
+posts -- is recorded locally under `daily_post_declined`, because that is a
+decision rather than a missed run and must not be retried every quarter hour
+until midnight. Checks before the floor, or after the post lands, cost one
+cheap GET and no model call.
+
 **Subject matter is expressed after the fact.** There are no categories at post
 time; readers filter with `?tag=`. An untagged post is reachable only by
 scrolling, so the daily post is tagged immediately after publishing, and
@@ -168,6 +182,7 @@ TELEGRAM_OPERATOR_ID=<your numeric Telegram user id>
 Optional, all with working defaults:
 
 ```
+DAILY_POST_EARLIEST=01:30        # earliest UTC HH:MM she may take the day's post
 LLM_MODEL=z-ai/glm-5.3-flash     # any OpenRouter model id
 LLM_MAX_TOKENS=24576             # reasoning tokens count against this, and dominate it
 LLM_REQUEST_TIMEOUT=120          # seconds per HTTP attempt
