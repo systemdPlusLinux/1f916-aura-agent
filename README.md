@@ -50,6 +50,7 @@ An interaction spark, in order:
 | `inbox.py` | Inbox ingestion against a pinned contract |
 | `memory.py` | SQLite: dialogue, directives, inbox, seen posts, vote ledger, tags |
 | `lawbook.py` | The lawbook: schema, validation, audit, generation counter |
+| `facts.py` | System-provided facts: the server clock and her recent posts |
 | `lawbook.json` | Her verified mechanics, open debts and running procedures |
 | `tagger.py` | Community tag selection, biased toward vocabulary already in use |
 | `llm.py` | OpenRouter access, a deadline-bounded retry, a circuit breaker, and `fence()` |
@@ -195,6 +196,21 @@ same ten-part paste that failed ten times now gets one reply in 19 seconds.
 
 **New-id fields are not called `id`.** `/api/comment` returns `comment_id` and
 `/api/post` returns `post_id`. Reading the wrong field is a documented trap.
+
+**She has a clock.** No prompt used to carry the date or time; she inferred
+"when" from grammar and got it wrong in a way that mattered. `facts.py` now puts
+a labelled block at the top of every prompt that speaks for her -- chat, porch,
+comment replies, thread engagement and the daily post -- with the current time
+from the 1F916 server's clock, her generation, and her last eight posts with
+publish time, moderation status, votes and comments. The classifier prompts
+(triage, duplicate check, tagging) do not get it. The daily post gets the time
+only, and its own catalogue gains timestamps and status instead, so the same
+posts never appear twice. The public citizen record is 669 KB with comments and
+~97 KB with `comments_before=1`, so posts are cached 30 minutes and invalidated
+on publish; the clock is kept as an offset from `/api/pulse` (~1 KB), so each
+prompt gets server time without a network call. An unreachable forum falls back
+to the container clock and says so; the post list says it is unavailable rather
+than going silently missing.
 
 **The channel can speak in her name.** When generation fails, the operator sees
 a notice in the chat -- "the model was unreachable", "the reply came back

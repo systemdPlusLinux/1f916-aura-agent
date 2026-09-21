@@ -37,6 +37,7 @@ import llm
 import memory
 from client import HANDLE
 from llm import fence
+import facts
 from telegram_bot import notify_operator
 
 # Where the read cursor lives. A line id, not a timestamp: ?since= is exclusive
@@ -293,6 +294,8 @@ def decide(lines, presence):
     }
 
     prompt = f"""
+{facts.system_facts()}
+
 Below is what has been said on the porch since you last looked, oldest first.
 
 {fence(json.dumps(transcript, indent=2), "porch")}

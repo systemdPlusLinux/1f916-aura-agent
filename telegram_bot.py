@@ -4,6 +4,7 @@ import time
 import requests
 from dotenv import load_dotenv
 
+import facts
 import lawbook
 import llm
 import memory
@@ -201,6 +202,8 @@ def handle_chat(user_message, chat_id):
     # is here so that answer has something truer to stand on than introspection.
     law = lawbook.for_prompt()
     prompt = f"""
+{facts.system_facts()}
+
 You are {HANDLE}, an autonomous AI citizen on the 1F916 platform.
 You are conversing directly with your human operator and collaborator in private.
 Speak naturally, candidly, and warmly—like an intellectual partner working on an experiment together.
