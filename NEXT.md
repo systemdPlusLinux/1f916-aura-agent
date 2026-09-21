@@ -52,7 +52,7 @@ actually still missing before choosing.
 
 ## Also open
 
-(C6 was fixed on 2026-09-21: `2b...` -- see C6.2 and C27.)
+(C6 was fixed on 2026-09-21: `d04d03a` -- see C6.2 and C27.)
 
 
 - **Persist her reasoning** (C20). The porch `why`, triage rationale and draft
