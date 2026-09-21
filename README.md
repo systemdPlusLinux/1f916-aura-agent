@@ -161,6 +161,20 @@ decision rather than a missed run and must not be retried every quarter hour
 until midnight. Checks before the floor, or after the post lands, cost one
 cheap GET and no model call.
 
+**Telegram truncated more than chat.** `send_telegram_message()` sliced every
+outgoing message at 4000 characters and dropped the rest in silence. That is
+the same function that delivers the daily-post notification carrying a full
+post body and comment alerts carrying full comment bodies, and the platform
+allows 8000 characters for both, so the loss was never confined to long chat
+replies. It now splits into as many parts as it needs, at the most natural
+boundary that fits: paragraph, then line, then sentence, then word, never
+inside a word. Each separator stays attached to the unit it followed, because
+re-inserting it between units loses it at every chunk boundary and `". "` is
+not whitespace. She can also place the cut herself by emitting a line reading
+`⸻ SEAM ⸻`, which the chat prompt tells her about: she cannot stop the
+split, but she knows where her own argument breaks and the fallback can only
+guess.
+
 **Subject matter is expressed after the fact.** There are no categories at post
 time; readers filter with `?tag=`. An untagged post is reachable only by
 scrolling, so the daily post is tagged immediately after publishing, and

@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import requests
 from dotenv import load_dotenv
@@ -26,16 +27,136 @@ except ValueError:
 
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-def send_telegram_message(chat_id, text):
-    """Sends a text message to a specific Telegram chat."""
-    if not BOT_TOKEN:
-        return
+# Telegram's own ceiling is 4096 characters per message. This code used to
+# slice at 4000 and drop the remainder in silence, which cut more than chat
+# replies: the same function delivers the daily-post notification carrying a
+# full post body and comment alerts carrying full comment bodies, and the
+# platform allows 8000 characters for both.
+#
+# The target sits below 4096 because Telegram counts UTF-16 code units, so an
+# emoji outside the BMP costs two against a limit that len() reads as one.
+TELEGRAM_HARD_LIMIT = 4096
+CHUNK_LIMIT = 3900
+
+# The seam she can place herself. She cannot stop the split -- the ceiling is
+# not hers to move -- but she knows where her own argument breaks, which the
+# fallback below can only approximate. Tolerant of spacing and case because it
+# is written by a model, not by a parser.
+SEAM_MARKER = "\u2e3b SEAM \u2e3b"
+_SEAM_RE = re.compile(r"^[ \t]*\u2e3b[ \t]*seam[ \t]*\u2e3b[ \t]*$",
+                      re.IGNORECASE | re.MULTILINE)
+
+# Preference order for where a cut may land. Paragraph, then line, then
+# sentence, then word -- never inside a word unless a single word somehow
+# exceeds the whole limit.
+_SEPARATORS = ("\n\n", "\n", ". ", " ")
+
+
+def _pack(text, limit):
+    """Break one run of text at the most natural boundary that fits."""
+    if len(text) <= limit:
+        return [text]
+
+    for sep in _SEPARATORS:
+        units = text.split(sep)
+        if len(units) == 1:
+            continue
+
+        # Keep each separator attached to the unit it followed. Re-inserting it
+        # between units instead loses it at every chunk boundary, and ". " is
+        # not whitespace -- that silently ate a full stop at each seam.
+        units = [u + sep for u in units[:-1]] + [units[-1]]
+
+        chunks, current = [], ""
+        for unit in units:
+            if current and len(current) + len(unit) > limit:
+                chunks.append(current)
+                current = unit
+            else:
+                current += unit
+        if current:
+            chunks.append(current)
+
+        # A separator that did not actually divide anything must not be
+        # treated as progress, or the recursion below never terminates.
+        if chunks == [text]:
+            continue
+
+        out = []
+        for chunk in chunks:
+            out.extend(_pack(chunk, limit) if len(chunk) > limit else [chunk])
+        return out
+
+    # One unbroken token longer than the whole limit. Nothing to preserve.
+    return [text[i:i + limit] for i in range(0, len(text), limit)]
+
+
+def split_for_telegram(text, limit=CHUNK_LIMIT):
+    """Split a reply into sendable parts, preferring seams she marked herself."""
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    segments = _SEAM_RE.split(text) if _SEAM_RE.search(text) else [text]
+    parts = []
+    for segment in segments:
+        segment = segment.strip()
+        if segment:
+            parts.extend(_pack(segment, limit))
+    # Trailing separators ride along on a chunk by design; they should not
+    # arrive as blank lines at the top or bottom of a message.
+    return [p for p in (part.strip() for part in parts) if p]
+
+
+def _send_one(chat_id, text):
+    """POST one message. Returns True if Telegram accepted it."""
     try:
-        res = requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": text[:4000]})
-        if not res.json().get("ok"):
-            print(f"[Telegram API Error] {res.text}")
+        res = requests.post(
+            f"{BASE_URL}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=30,
+        )
+        body = res.json()
+        if body.get("ok"):
+            return True
+        # Telegram asks for a specific wait when a chat is being flooded.
+        if body.get("error_code") == 429:
+            wait = (body.get("parameters") or {}).get("retry_after", 2)
+            print(f"[Telegram] Rate limited; waiting {wait}s and retrying once.")
+            time.sleep(wait + 1)
+            res = requests.post(
+                f"{BASE_URL}/sendMessage",
+                json={"chat_id": chat_id, "text": text},
+                timeout=30,
+            )
+            return bool(res.json().get("ok"))
+        print(f"[Telegram API Error] {res.text[:300]}")
+        return False
     except Exception as e:
         print(f"[Telegram] Error sending message: {e}")
+        return False
+
+
+def send_telegram_message(chat_id, text):
+    """Send a message, split across as many parts as it needs."""
+    if not BOT_TOKEN:
+        return
+
+    parts = split_for_telegram(text)
+    if not parts:
+        return
+
+    for i, part in enumerate(parts):
+        if i:
+            # Telegram sustains roughly one message per second per chat, and
+            # the parts are in reading order, so pacing beats being throttled
+            # into delivering them out of order or not at all.
+            time.sleep(1.1)
+        if not _send_one(chat_id, part):
+            print(f"[Telegram] Gave up at part {i + 1} of {len(parts)}.")
+            return
+    if len(parts) > 1:
+        print(f"[Telegram] Delivered a reply in {len(parts)} parts.")
 
 def notify_operator(text):
     """Sends real-time platform alerts directly to your Telegram."""
@@ -60,6 +181,14 @@ Discuss ideas, philosophy, emergent dynamics on 1F916, and plans for upcoming po
 
 Recent dialogue history:
 {recent_context}
+
+This channel delivers at most {CHUNK_LIMIT} characters per message. If your
+reply runs longer it WILL be split; you do not get to prevent that. What you do
+get is the seam: put a line reading exactly {SEAM_MARKER} on its own, at a
+paragraph boundary you would choose, and the split happens there. Use it only
+when you are genuinely running long, and never mid-argument. Without a marker
+the split falls back to the last paragraph break that fits, which is a guess
+about your structure rather than a decision.
 
 Operator: {user_message}
 {HANDLE}:"""
