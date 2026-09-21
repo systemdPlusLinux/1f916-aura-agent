@@ -2,7 +2,10 @@ import sqlite3
 import os
 import time
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "aura_memory.db")
+# Overridable so tests can run against a copy. Importing this module creates
+# any missing tables, so a test that imported it against the live file would
+# write her real database.
+DB_PATH = os.getenv("AURA_DB_PATH") or os.path.join(os.path.dirname(__file__), "aura_memory.db")
 
 def init_db():
     """Initializes SQLite database tables for shared agent memory."""
@@ -121,6 +124,15 @@ def init_db():
         #    guidance -- ack_cursor is computed per read and can legitimately
         #    come back lower between reads.
         cursor.execute("""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER,
+            kind TEXT,
+            ref TEXT,
+            text TEXT
+        )
+        """)
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS ack_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             acked_at INTEGER,
@@ -233,6 +245,79 @@ def get_recent_dialogue(limit: int = 8, max_age_hours: int = None,
 
         dialogue_lines = [f"{speaker}: {msg}" for speaker, msg in reversed(rows)]
         return "\n".join(dialogue_lines)
+
+
+# --- Her own board activity ---------------------------------------------
+
+# Her comments, posts and porch lines reached the operator's Telegram through
+# notify_operator() and were stored nowhere she could read. So the operator saw
+# one conversation -- his messages, her replies, and everything she did on the
+# board in between -- and she saw a different one with the board missing. When
+# he referred to "that comment you just made", she had no record of it.
+ACTIVITY_CHARS = 300       # each action is summarised, not reprinted in full
+ACTIVITY_LIMIT = 20        # the newest this many, however busy the window was
+
+
+def record_activity(kind: str, ref: str, text: str):
+    """Record something she did on the board. Never raises: failing to write a
+    log line must not undo the action it describes."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO activity_log (timestamp, kind, ref, text) VALUES (?, ?, ?, ?)",
+                (int(time.time()), kind, ref or "", text or ""))
+            conn.commit()
+    except Exception as e:
+        print(f"[Memory] Could not record activity ({kind} {ref}): {e}")
+
+
+_ACTIVITY_VERBS = {
+    "comment": "commented on",
+    "comment_rejected": "had a comment REJECTED on",
+    "post": "published",
+    "post_rejected": "had the daily post REJECTED",
+    "post_declined": "declined to post today",
+    "porch": "said on the porch",
+}
+
+
+def _activity_line(ts, kind, ref, text):
+    body = " ".join((text or "").split())
+    if len(body) > ACTIVITY_CHARS:
+        body = body[:ACTIVITY_CHARS].rsplit(" ", 1)[0] + "..."
+    verb = _ACTIVITY_VERBS.get(kind, kind)
+    target = f" {ref}" if ref else ""
+    return f"[{_stamp(ts)}] {HANDLE_LABEL} (on the board) {verb}{target}: {body}"
+
+
+HANDLE_LABEL = os.getenv("ONEF916_HANDLE", "Aura")
+
+
+def get_chat_timeline(limit: int = 8) -> str:
+    """The conversation as the operator sees it in Telegram: his messages, her
+    replies, and what she did on the board in the same stretch of time,
+    interleaved in time order, every line stamped.
+
+    The conversation is still its newest `limit` turns. Board activity is taken
+    from the moment the oldest of those turns was said, so the two cover the
+    same span and nothing appears out of context. Actions are summarised to
+    ACTIVITY_CHARS and capped at the newest ACTIVITY_LIMIT, so a busy spark
+    cannot crowd the conversation out.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        turns = conn.execute(
+            "SELECT timestamp, speaker, message FROM operator_dialogue "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        since = min(t for t, _, _ in turns) if turns else int(time.time()) - 86400
+        acts = conn.execute(
+            "SELECT timestamp, kind, ref, text FROM activity_log WHERE timestamp >= ? "
+            "ORDER BY id DESC LIMIT ?", (since, ACTIVITY_LIMIT)).fetchall()
+
+    # (timestamp, order) keeps a conversation turn ahead of an action stamped in
+    # the same second, and each list in its own original order.
+    events = [(t, 0, i, f"[{_stamp(t)}] {s}: {m}") for i, (t, s, m) in enumerate(reversed(turns))]
+    events += [(t, 1, i, _activity_line(t, k, r, x)) for i, (t, k, r, x) in enumerate(reversed(acts))]
+    return "\n".join(line for *_, line in sorted(events))
 
 
 def save_directive(topic: str):

@@ -197,6 +197,22 @@ same ten-part paste that failed ten times now gets one reply in 19 seconds.
 **New-id fields are not called `id`.** `/api/comment` returns `comment_id` and
 `/api/post` returns `post_id`. Reading the wrong field is a documented trap.
 
+**She sees the conversation you see.** Her comments, posts and porch lines
+reached the operator's Telegram through `notify_operator()` and were stored
+nowhere she could read, so the two of them were reading different
+conversations: his view had the board in it and hers did not. Every action is
+now written to an `activity_log` table where it happens -- comments, posts,
+porch lines, and rejected comments, rejected posts and declined posts -- and
+chat reads `memory.get_chat_timeline()`, which interleaves those actions with
+the conversation in time order, every line stamped. Actions are taken from the
+moment the oldest conversation turn in view was said, so both cover the same
+span; each is summarised to 300 characters and only the newest 20 are shown, so
+a busy spark cannot crowd the conversation out. Recording never raises, so a
+failed log write cannot undo the action it describes. The log starts empty at
+first deploy and fills as she acts. `AURA_DB_PATH` points `memory` at another
+database, because importing it creates missing tables and a test must never do
+that to the live file.
+
 **Every line of history says when it was said.** Conversation reached her as
 bare `speaker: message` lines, so a reply from ten minutes ago and one from ten
 hours ago looked the same -- and with an eight-row chat window, that was often

@@ -253,6 +253,7 @@ def say(body):
     remember_said(body)
     record_line_said()
     line_id = res.get("line_id") or res.get("id") if isinstance(res, dict) else None
+    memory.record_activity("porch", f"porch:{line_id}" if line_id else "", body)
     print(f"[Porch] Said (porch:{line_id}): {body[:120]}")
     return line_id
 

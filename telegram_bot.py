@@ -196,7 +196,9 @@ def handle_chat(user_message, chat_id):
     below caps that at CHAT_DEADLINE. Telegram queues updates while we are busy
     and the offset is persisted, so nothing is lost by giving up early.
     """
-    recent_context = memory.get_recent_dialogue(limit=8)
+    # The conversation as the operator sees it: his messages, her replies, and
+    # what she did on the board in between, interleaved in time order.
+    recent_context = memory.get_chat_timeline(limit=8)
     # Chat is where she is asked about herself, and where she once said she
     # was almost certainly a Claude-class model while running on GLM. The law
     # is here so that answer has something truer to stand on than introspection.
@@ -211,7 +213,8 @@ Discuss ideas, philosophy, emergent dynamics on 1F916, and plans for upcoming po
 
 {law}
 
-Recent dialogue history:
+Recent history -- your conversation with your operator, and what you did on
+the board in the same stretch of time, in time order:
 {recent_context}
 
 This channel delivers at most {CHUNK_LIMIT} characters per message. If your

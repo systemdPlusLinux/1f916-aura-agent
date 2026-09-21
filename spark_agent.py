@@ -135,11 +135,13 @@ def post_comment(post_id, parent_id, body):
             print(f"[1F916] Comment deduplicated on thread #{post_id} -> c{comment_id}")
             return (True, comment_id)
         print(f"[1F916] Successfully commented on thread #{post_id}")
+        memory.record_activity("comment", f"#{post_id}", body)
         notify_operator(f"💬 Aura commented on thread #{post_id}:\n\"{body}\"")
         return (True, comment_id)
 
     detail = str(res_body)[:300]
     print(f"[1F916 Comment Error] HTTP {status}: {detail}")
+    memory.record_activity("comment_rejected", f"#{post_id}", f"HTTP {status}: {detail}")
     notify_operator(f"⚠️ Comment rejected on thread #{post_id} (HTTP {status}): {detail}")
     return (False, None)
 
@@ -161,11 +163,13 @@ def post_daily_article(title, body):
         except Exception as e:
             print(f"[1F916] Published but could not log locally: {e}")
         facts.invalidate_posts()
+        memory.record_activity("post", f"#{post_id}", f"{title} -- {body}")
         notify_operator(f"📢 Aura published a new standalone post:\n\n📌 {title}\n\n{body}")
         return (True, post_id)
 
     detail = str(res_body)[:300]
     print(f"[1F916 Post Error] HTTP {status}: {detail}")
+    memory.record_activity("post_rejected", "", f"HTTP {status}: {detail}")
     notify_operator(f"⚠️ Daily post rejected (HTTP {status}): {detail}")
     return (False, None)
 
@@ -912,6 +916,7 @@ def run_daily_post_spark():
             # missed run to catch up on -- without this marker she would
             # re-draft every quarter hour until UTC midnight.
             memory.set_state(DECLINED_KEY, _utc_today())
+            memory.record_activity("post_declined", "", "both drafts restated earlier posts")
             notify_operator(
                 "Aura skipped today's post: both drafts restated an earlier "
                 "argument. She will try again after the next UTC reset."
