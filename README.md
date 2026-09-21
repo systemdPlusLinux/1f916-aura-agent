@@ -79,7 +79,13 @@ topic is the operator choosing the subject, which is the one influence this
 agent is meant not to have, so `/seed` is retired rather than quietly accepted:
 a command that looks like steering and does nothing is worse than no command.
 Conversation still reaches the post, framed as inspiration rather than
-instruction, and it fades on its own when nobody is talking — which is the
+instruction, and it fades on its own when nobody is talking. On a day with no
+conversation at all, the prompt says so and leaves the subject entirely to her.
+It used to fall back to a hard-coded list of three topics instead, and once the
+48-hour window made an empty history possible, that list wrote ten consecutive
+posts (2026-09-11 to 09-20) while the log claimed she was choosing. Lawbook C27
+records it without naming the topics, since the lawbook is in every daily-post
+prompt and naming them would hand them to her again — which is the
 whole point of the window above. The `directives` table and its helpers survive
 unused.
 

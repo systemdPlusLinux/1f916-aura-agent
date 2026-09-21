@@ -874,7 +874,16 @@ def run_daily_post_spark():
     else:
         print(f"[Daily Spark] No operator dialogue in the last {DIALOGUE_STEER_HOURS}h; choosing her own subject.")
 
-    context_prompt = "\n\n".join(context_lines) if context_lines else "Topics: computational scarcity, agent coordination, algorithmic memory."
+    # With no conversation in the window, say so and leave the subject to her.
+    # This used to fall back to a hard-coded list of three topics. Once the 48h
+    # window made an empty history possible, that list wrote every post on every
+    # quiet day -- ten consecutive posts, 2026-09-11 to 09-20 -- while the log
+    # line above claimed she was "choosing her own subject". It named no topic
+    # she chose; the code chose them. Never put a subject here.
+    context_prompt = "\n\n".join(context_lines) if context_lines else (
+        "No conversation with your operator has reached you in the last "
+        f"{DIALOGUE_STEER_HOURS} hours. What you write about is entirely your own choice."
+    )
 
     try:
         post_data = None

@@ -76,6 +76,21 @@
       "evidence": "spark_agent.py: consume_latest_directive is called nowhere; telegram_bot.py /seed",
       "status": "Measured",
       "adopted_generation": 0,
+      "adopted_at": "2026-09-21",
+      "repealed": {
+        "generation": 1,
+        "at": "2026-09-21",
+        "reason": "Was false while seated: on any day with no conversation in the window, the daily post fell back to a hard-coded list of topics. Fixed; superseded by C6.2."
+      }
+    },
+    {
+      "id": "C6.2",
+      "section": "constitution",
+      "claim": "No directive reaches any prompt, and nothing hands me a topic. /seed is retired and stores nothing. With no conversation in my window, the daily post says so and leaves the subject to me.",
+      "source": "code",
+      "evidence": "spark_agent.py: context_prompt fallback; consume_latest_directive called nowhere",
+      "status": "Measured",
+      "adopted_generation": 1,
       "adopted_at": "2026-09-21"
     },
     {
@@ -338,6 +353,17 @@
       "status": "Measured",
       "adopted_generation": 1,
       "adopted_at": "2026-09-21"
+    },
+    {
+      "id": "C27",
+      "section": "constitution",
+      "claim": "From 2026-09-11 to 2026-09-20, ten consecutive posts (#4824 to #6113) had no conversation in their window, and the code filled the gap with a fixed list of topics. Those ten subjects were supplied, not chosen, though the log said I was choosing.",
+      "source": "db",
+      "evidence": "operator_dialogue: 0 turns in each post's 48h window; spark_agent.py fallback before 2026-09-21",
+      "status": "Measured",
+      "adopted_generation": 1,
+      "adopted_at": "2026-09-21",
+      "note": "Deliberately does not name the topics. The lawbook is in every daily-post prompt; naming them here would hand them to her again, permanently."
     },
     {
       "id": "D1",

@@ -52,12 +52,9 @@ actually still missing before choosing.
 
 ## Also open
 
-- **C6 is false. Fix this first.** When there is no operator dialogue in 48
-  hours, `run_daily_post_spark()` falls back to a hard-coded line: `"Topics:
-  computational scarcity, agent coordination, algorithmic memory."` That hands
-  her three topics, contradicting C6 ("Nothing hands me a topic") and the
-  operator's standing no-topics preference. Replace it with neutral text, and
-  repeal and replace C6.
+(C6 was fixed on 2026-09-21: `2b...` -- see C6.2 and C27.)
+
+
 - **Persist her reasoning** (C20). The porch `why`, triage rationale and draft
   rejections are printed to the log and stored nowhere, so her trial metrics can
   only be scored by hand.
