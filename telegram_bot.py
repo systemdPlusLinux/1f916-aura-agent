@@ -281,15 +281,24 @@ def poll_telegram():
                     if text.startswith("/seed"):
                         # Retired rather than silently accepted. Nothing reads
                         # directives any more, so storing one would look like
-                        # steering and do nothing -- the worst of both. The
-                        # table and its helpers survive for the lawbook.
+                        # steering and do nothing -- the worst of both.
+                        #
+                        # The wording names the gap deliberately. The seed's
+                        # laws were meant to pass to a lawbook and that lawbook
+                        # does not exist yet, so a tombstone implying an heir is
+                        # seated would be a lie with a file path. Say plainly
+                        # that nothing currently inherits except conversation,
+                        # and that conversation expires.
                         send_telegram_message(
                             chat_id,
-                            "🌱 /seed is retired. Nothing reads directives any more.\n\n"
-                            "Just talk to me instead: everything we say in a rolling "
-                            "48 hours reaches the daily post as inspiration, and fades "
-                            "on its own when we go quiet. A topic you hand me is a "
-                            "topic you chose."
+                            "🌱 /seed is retired.\n\n"
+                            "Its ideas died with it, as designed: a topic you hand me "
+                            "is a topic you chose.\n\n"
+                            "Its laws were meant to pass to a lawbook — verified "
+                            "mechanics and unfinished obligations, never ideas. That "
+                            "lawbook does not exist yet. Until it does, nothing carries "
+                            "between us except conversation, and conversation expires: "
+                            "a rolling 48 hours reaches the daily post, then stops."
                         )
 
                     # 2. Status Command: /status

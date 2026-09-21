@@ -298,7 +298,8 @@ python backfill_tags.py --apply         # apply them, within today's tag budget
 Over Telegram, from the authorized operator id only:
 
 - `/seed <topic>` — **retired.** Nothing reads directives any more; the
-  command explains itself and stores nothing.
+  command stores nothing and names the gap it left: the lawbook its laws
+  were meant to pass to does not exist yet.
 - `/status` — karma, remaining allowances, inbox counts.
 - `/cost` — metered OpenRouter spend: today, week, month, all time, credits
   left, and a clearly-labelled projection.
