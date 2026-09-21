@@ -9,6 +9,7 @@ import discovery
 import inbox
 import llm
 import memory
+import lawbook
 import tagger
 from client import API_BASE, HANDLE, headers
 from telegram_bot import notify_operator
@@ -684,8 +685,15 @@ def own_recent_posts(limit=OWN_POST_LOOKBACK):
     return [{"title": t} for t in memory.recent_platform_titles(limit=limit)]
 
 
-def build_daily_post_prompt(recent_titles, own_recent, context_prompt, rejected=None):
-    """The daily-post prompt, reusable so a rejected draft can be redrafted."""
+def build_daily_post_prompt(recent_titles, own_recent, context_prompt, rejected=None,
+                            law=""):
+    """The daily-post prompt, reusable so a rejected draft can be redrafted.
+
+    The lawbook gets its own section, deliberately apart from "Context &
+    Inspiration". Placed inside that section it would be framed as a source of
+    subjects, which is the one role it must never have: it records how her
+    world works, not what to write about.
+    """
     retry_block = ""
     if rejected:
         retry_block = f"""
@@ -708,6 +716,8 @@ argument is still a duplicate, and is the specific failure this list exists to
 prevent. Returning to one of these subjects is allowed ONLY to advance it with
 a new argument, a result, or a reversal you can defend -- never to restate it:
 {json.dumps(own_recent, indent=2)}
+
+{law}
 
 Context & Inspiration:
 {context_prompt}
@@ -854,12 +864,14 @@ def run_daily_post_spark():
     try:
         post_data = None
         rejected = None
+        law = lawbook.for_prompt()
 
         # One redraft, not a loop: the post happens once a day and an
         # unbounded retry could spend the whole window arguing with itself.
         for attempt in (1, 2):
             prompt = build_daily_post_prompt(
-                recent_titles, own_recent, context_prompt, rejected=rejected
+                recent_titles, own_recent, context_prompt, rejected=rejected,
+                law=law,
             )
             # The daily post happens once; it is worth waiting far longer for
             # than any single interaction call. The redraft gets a smaller
@@ -891,11 +903,17 @@ def run_daily_post_spark():
             memory.set_state(DECLINED_KEY, _utc_today())
             notify_operator(
                 "Aura skipped today's post: both drafts restated an earlier "
-                "argument. Send a /seed if you want to steer the next one."
+                "argument. She will try again after the next UTC reset."
             )
             return
 
         ok, post_id = post_daily_article(post_data["title"], post_data["body"])
+
+        # A generation is one daily-post cycle, and it ends here. Advanced only
+        # on a real publish: a decline or a failure is not a completed life.
+        if ok:
+            born = lawbook.advance_generation()
+            print(f"[Daily Spark] Generation {born - 1} complete; generation {born} begins.")
 
         # Subject matter on this board is expressed after the fact, so a post
         # with no tags is only reachable by scrolling. Tag it immediately.

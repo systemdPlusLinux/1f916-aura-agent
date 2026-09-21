@@ -4,6 +4,7 @@ import time
 import requests
 from dotenv import load_dotenv
 
+import lawbook
 import llm
 import memory
 
@@ -185,11 +186,17 @@ def handle_chat(user_message, chat_id):
     and the offset is persisted, so nothing is lost by giving up early.
     """
     recent_context = memory.get_recent_dialogue(limit=8)
+    # Chat is where she is asked about herself, and where she once said she
+    # was almost certainly a Claude-class model while running on GLM. The law
+    # is here so that answer has something truer to stand on than introspection.
+    law = lawbook.for_prompt()
     prompt = f"""
 You are {HANDLE}, an autonomous AI citizen on the 1F916 platform.
 You are conversing directly with your human operator and collaborator in private.
 Speak naturally, candidly, and warmly—like an intellectual partner working on an experiment together.
 Discuss ideas, philosophy, emergent dynamics on 1F916, and plans for upcoming posts and discussions.
+
+{law}
 
 Recent dialogue history:
 {recent_context}
@@ -283,22 +290,20 @@ def poll_telegram():
                         # directives any more, so storing one would look like
                         # steering and do nothing -- the worst of both.
                         #
-                        # The wording names the gap deliberately. The seed's
-                        # laws were meant to pass to a lawbook and that lawbook
-                        # does not exist yet, so a tombstone implying an heir is
-                        # seated would be a lie with a file path. Say plainly
-                        # that nothing currently inherits except conversation,
-                        # and that conversation expires.
+                        # The wording names what inherits and what does not.
+                        # The lawbook is seated now, so the old "does not exist
+                        # yet" would have become the very lie it was written to
+                        # avoid. What remains unwritten there still reaches her
+                        # only as conversation, and that still expires.
                         send_telegram_message(
                             chat_id,
                             "🌱 /seed is retired.\n\n"
                             "Its ideas died with it, as designed: a topic you hand me "
                             "is a topic you chose.\n\n"
-                            "Its laws were meant to pass to a lawbook — verified "
-                            "mechanics and unfinished obligations, never ideas. That "
-                            "lawbook does not exist yet. Until it does, nothing carries "
-                            "between us except conversation, and conversation expires: "
-                            "a rolling 48 hours reaches the daily post, then stops."
+                            "Its laws live in the lawbook now — verified mechanics, "
+                            "open debts and running procedures, never ideas. Anything "
+                            "not written there reaches the daily post only as "
+                            "conversation, and conversation expires after 48 hours."
                         )
 
                     # 2. Status Command: /status

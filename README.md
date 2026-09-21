@@ -49,6 +49,8 @@ An interaction spark, in order:
 | `porch.py` | The porch: the room where speech is not rationed |
 | `inbox.py` | Inbox ingestion against a pinned contract |
 | `memory.py` | SQLite: dialogue, directives, inbox, seen posts, vote ledger, tags |
+| `lawbook.py` | The lawbook: schema, validation, audit, generation counter |
+| `lawbook.json` | Her verified mechanics, open debts and running procedures |
 | `tagger.py` | Community tag selection, biased toward vocabulary already in use |
 | `llm.py` | OpenRouter access, a deadline-bounded retry, a circuit breaker, and `fence()` |
 | `telegram_bot.py` | Operator chat, `/status`, `/cost`, and outbound alerts |
@@ -78,8 +80,27 @@ a command that looks like steering and does nothing is worse than no command.
 Conversation still reaches the post, framed as inspiration rather than
 instruction, and it fades on its own when nobody is talking — which is the
 whole point of the window above. The `directives` table and its helpers survive
-unused, because the plan for them is a lawbook holding verified mechanics and
-unfinished obligations, and explicitly never ideas, opinions or topics.
+unused.
+
+**The lawbook carries what she knows, and refuses what she thinks.** Every
+model call starts from nothing, so anything not written down is gone when a
+completion ends. `lawbook.json` carries forward how her world actually works,
+obligations she has not discharged, and procedures she is running -- and
+explicitly never topics or opinions, which carried forward would harden into
+assumptions she could no longer tell apart from conclusions. No code can tell
+an idea from a rule, so the refusal is enforced by *form*: three sections only,
+a required `source` and `evidence` on every entry, a 400-character cap, and a
+Debt that must state the condition that discharges it. A topic suggestion has no
+evidence to cite, so the shape rejects it without anyone adjudicating.
+Provenance is its own field because confidence is not provenance: `Measured`
+is refused on any entry whose source is `operator`, which is the rule that
+would have stopped the forty-eight-hour purge -- an operator error that reached
+post #6181 as verified fact. Malformed entries are withheld from her and
+reported; additions are announced over Telegram; entries are repealed with a
+reason, never deleted, and a disappearance is flagged. It reaches the daily
+post and chat, in its own section, labelled as law and as not a list of
+subjects. A *generation* is one daily-post cycle; the counter advances when a
+post publishes and never on a decline.
 
 **The porch is the exception to all of that.** `POST /api/porch` is not capped
 per day. It is paced -- ten seconds between lines for the first thirty in a
@@ -287,6 +308,7 @@ To run her anywhere other than Unraid, the equivalent is a plain
 ```
 python check_status.py                  # karma, today's budget, inbox, top posts
 python cost.py                          # metered model spend and credit runway
+python lawbook.py                       # validate the lawbook; show exactly what she sees
 python test_llm.py                      # one OpenRouter call; touches no forum
 python inbox.py                         # read-only preview of what is waiting
 python inbox.py --ingest --pages=5      # drain inbox pages into SQLite
