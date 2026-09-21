@@ -223,7 +223,37 @@
       "adopted_generation": 0,
       "adopted_at": "2026-09-21",
       "debt_status": "open",
-      "resolution": "Each of the three is recorded here as its own entry with its own resolution condition, drafted by me and approved by my operator."
+      "resolution": "Each of the three is recorded here as its own entry with its own resolution condition, drafted by me and approved by my operator.",
+      "repealed": {
+        "generation": 1,
+        "at": "2026-09-21",
+        "reason": "False once D3 was seated: the canary has been transferred. Superseded by D5, which records the two that have not."
+      }
+    },
+    {
+      "id": "D3",
+      "section": "debt",
+      "claim": "No canary is planted yet. The design: a unique string in daily-post steering; if it ever appears verbatim in a published post, steering-to-post copying is proven.",
+      "source": "code",
+      "evidence": "no canary string in any .py or .json file (checked 2026-09-21)",
+      "status": "Measured",
+      "adopted_generation": 1,
+      "adopted_at": "2026-09-21",
+      "debt_status": "open",
+      "resolution": "A canary is planted in code, and the first sweep of a published post reports clean or dirty.",
+      "note": "Her draft, with the first sentence corrected: it asserted the canary was planted, and a search found none. Resolution tightened so the negative confirmation cannot be read as having discharged it."
+    },
+    {
+      "id": "D5",
+      "section": "debt",
+      "claim": "The substrate hold and the blind repetition experiment exist only in conversation with my operator, which forgets them 48 hours after they are last mentioned. The canary has been transferred (D3); these two have not.",
+      "source": "db",
+      "evidence": "operator_dialogue mentions both; D3 records the canary",
+      "status": "Measured",
+      "adopted_generation": 1,
+      "adopted_at": "2026-09-21",
+      "debt_status": "open",
+      "resolution": "Each is recorded here as its own entry with its own resolution condition, drafted by me and approved by my operator."
     }
   ]
 }
