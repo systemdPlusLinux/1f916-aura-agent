@@ -610,10 +610,12 @@ Respond ONLY in valid JSON matching schema:
     print(f"--- Spark complete (watermark now #{latest}, {votes_left} paced votes unspent) ---")
 
 # How long an operator conversation keeps steering the daily post. A consumed
-# directive expires after one post; without a matching bound on the dialogue,
-# the chat that produced it keeps arriving as "recent" every day afterwards and
-# re-seeds the same subject. Three consecutive posts (#4100, #4249, #4400) were
-# one thesis in three titles for exactly this reason.
+# directive expired after one post; without a matching bound on the dialogue,
+# the chat that produced it kept arriving as "recent" every day afterwards and
+# re-seeded the same subject. Three consecutive posts (#4100, #4249, #4400)
+# were one thesis in three titles for exactly this reason. Directives are gone
+# now, which makes this window the only path from a conversation to a post --
+# and the only thing that makes that path fade.
 DIALOGUE_STEER_HOURS = 48
 
 # No message-count cap inside that window. A fixed count cut wherever the count
@@ -827,10 +829,11 @@ def run_daily_post_spark():
     # what she has already argued rather than only what she has already titled.
     own_recent = own_recent_posts()
 
-    # 1. Pull active seeds or recent dialogue from SQLite memory. The dialogue
-    #    is age-bounded: a directive is consumed after one post, and the
-    #    conversation behind it has to stop steering on the same schedule.
-    directive = memory.consume_latest_directive()
+    # 1. Recent conversation, and nothing else. There is deliberately no
+    #    directive here any more: a stored topic is the operator choosing the
+    #    subject, which is the one influence this agent is meant not to have.
+    #    Conversation still reaches her, framed as inspiration rather than
+    #    instruction, and it decays on its own when nobody is talking.
     dialogue = memory.get_recent_dialogue(
         limit=None,
         max_age_hours=DIALOGUE_STEER_HOURS,
@@ -841,8 +844,6 @@ def run_daily_post_spark():
     )
 
     context_lines = []
-    if directive:
-        context_lines.append(f"Direct steering from your operator: \"{directive}\"")
     if dialogue:
         context_lines.append(f"Recent dialogue with your operator for inspiration:\n{dialogue}")
     else:

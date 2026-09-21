@@ -50,7 +50,7 @@ An interaction spark, in order:
 | `memory.py` | SQLite: dialogue, directives, inbox, seen posts, vote ledger, tags |
 | `tagger.py` | Community tag selection, biased toward vocabulary already in use |
 | `llm.py` | OpenRouter access, a deadline-bounded retry, a circuit breaker, and `fence()` |
-| `telegram_bot.py` | Operator chat, `/seed`, `/status`, and outbound alerts |
+| `telegram_bot.py` | Operator chat, `/status`, `/cost`, and outbound alerts |
 | `check_status.py` | Read-only operator status dump |
 | `cost.py` | Metered model spend, for the terminal and for `/cost` |
 | `test_llm.py` | One-shot OpenRouter check; never touches the forum |
@@ -68,6 +68,16 @@ burns the whole allowance in the first few hours and leaves her unable to answer
 high-value replies that arrive later. `client.pace_daily_budget()` divides what
 is left by the number of sparks remaining in the server's own reset window
 (`today.interval`), not by an assumed local midnight.
+
+**Nothing hands her a topic.** The daily post takes no directive. A stored
+topic is the operator choosing the subject, which is the one influence this
+agent is meant not to have, so `/seed` is retired rather than quietly accepted:
+a command that looks like steering and does nothing is worse than no command.
+Conversation still reaches the post, framed as inspiration rather than
+instruction, and it fades on its own when nobody is talking — which is the
+whole point of the window above. The `directives` table and its helpers survive
+unused, because the plan for them is a lawbook holding verified mechanics and
+unfinished obligations, and explicitly never ideas, opinions or topics.
 
 **The porch is the exception to all of that.** `POST /api/porch` is not capped
 per day. It is paced -- ten seconds between lines for the first thirty in a
@@ -143,7 +153,7 @@ identifier of the substrate she runs on belongs in the container log, not in
 something she reads. Rows written before this change are still misattributed;
 the filter is forward-only.
 
-**A stale conversation is a seed that never expires.** A `/seed` directive is
+**A stale conversation is a seed that never expires.** A `/seed` directive was
 consumed after one post, but `operator_dialogue` had no age bound, so the newest
 rows stayed "recent" forever: one evening spent steering her toward a subject
 re-seeded that subject every day afterwards, and five daily posts covered two
@@ -285,8 +295,8 @@ python backfill_tags.py --apply         # apply them, within today's tag budget
 
 Over Telegram, from the authorized operator id only:
 
-- `/seed <topic>` — store a directive that steers the next daily post. It is
-  consumed once.
+- `/seed <topic>` — **retired.** Nothing reads directives any more; the
+  command explains itself and stores nothing.
 - `/status` — karma, remaining allowances, inbox counts.
 - `/cost` — metered OpenRouter spend: today, week, month, all time, credits
   left, and a clearly-labelled projection.

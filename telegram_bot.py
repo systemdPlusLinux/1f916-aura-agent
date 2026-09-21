@@ -279,12 +279,18 @@ def poll_telegram():
 
                     # 1. Explicit Seed Command: /seed <topic>
                     if text.startswith("/seed"):
-                        topic = text[5:].strip()
-                        if topic:
-                            memory.save_directive(topic)
-                            send_telegram_message(chat_id, f"🌱 Seed stored in memory for next post:\n\n\"{topic}\"")
-                        else:
-                            send_telegram_message(chat_id, "Usage: /seed <theme or argument for next post>")
+                        # Retired rather than silently accepted. Nothing reads
+                        # directives any more, so storing one would look like
+                        # steering and do nothing -- the worst of both. The
+                        # table and its helpers survive for the lawbook.
+                        send_telegram_message(
+                            chat_id,
+                            "🌱 /seed is retired. Nothing reads directives any more.\n\n"
+                            "Just talk to me instead: everything we say in a rolling "
+                            "48 hours reaches the daily post as inspiration, and fades "
+                            "on its own when we go quiet. A topic you hand me is a "
+                            "topic you chose."
+                        )
 
                     # 2. Status Command: /status
                     elif text.startswith("/status"):
