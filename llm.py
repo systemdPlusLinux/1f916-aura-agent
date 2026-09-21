@@ -53,6 +53,16 @@ MODEL_NAME = os.getenv("LLM_MODEL", "z-ai/glm-5.3-flash")
 # GLM 5.3 Flash permits up to 131072.
 MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "24576"))
 
+# A ceiling on reasoning itself, below MAX_TOKENS so an answer always has room.
+# Without one, a prompt can send the model into a reasoning runaway that never
+# concludes. Reproduced on a real chat prompt on 2026-09-21 (5,543 prompt
+# tokens): three attempts, each spending the entire 24,576-token budget on
+# reasoning -- completion=24576, reasoning=24576, visible reply empty -- for
+# 667 seconds and $0.039, and no answer at all. No deadline fixes that; only a
+# reasoning budget forces the model to stop thinking and answer. A normal daily
+# post measured 4,593 reasoning tokens, so this default binds only runaways.
+REASONING_MAX_TOKENS = int(os.getenv("LLM_REASONING_MAX_TOKENS", "12000"))
+
 # Per-HTTP-request ceiling. The deadline below bounds the whole call including
 # retries; this stops one hung socket from eating the entire budget.
 REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "120"))
@@ -141,7 +151,8 @@ def _log_usage(usage):
           f"total={total}{extra}{money}")
 
 
-def _request(messages, temperature, json_mode):
+def _request(messages, temperature, json_mode, timeout=REQUEST_TIMEOUT,
+             reasoning_tokens=None):
     """One HTTP call. Returns a Completion, or raises for the caller to judge."""
     global _usage_ext
     payload = {
@@ -155,6 +166,8 @@ def _request(messages, temperature, json_mode):
         payload["usage"] = {"include": True}
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    if reasoning_tokens:
+        payload["reasoning"] = {"max_tokens": int(reasoning_tokens)}
 
     res = requests.post(
         f"{API_BASE}/chat/completions",
@@ -166,7 +179,7 @@ def _request(messages, temperature, json_mode):
             "X-Title": "Aura on 1F916",
         },
         json=payload,
-        timeout=REQUEST_TIMEOUT,
+        timeout=timeout,
     )
 
     if res.status_code == 401:
@@ -218,10 +231,16 @@ def _request(messages, temperature, json_mode):
         # Reasoning tokens count toward the same ceiling as the answer, so a
         # truncated body can look well-formed and end mid-sentence. Never hand
         # this back: a cut-off post is worse than no post.
-        raise _Transient(
-            f"response truncated at max_tokens={MAX_TOKENS} "
-            "(raise LLM_MAX_TOKENS if this persists)"
-        )
+        details = usage.get("completion_tokens_details") or {}
+        if not content.strip() and details.get("reasoning_tokens"):
+            # The whole budget went to thinking. Raising MAX_TOKENS would not
+            # help -- the old advice here -- because the model never got as far
+            # as answering.
+            raise _Transient(
+                f"reasoning ran to the ceiling ({details['reasoning_tokens']} tokens) "
+                "without producing an answer"
+            )
+        raise _Transient(f"response truncated at max_tokens={MAX_TOKENS}")
 
     text = _unfence(content).strip()
     if not text:
@@ -245,19 +264,31 @@ class _Transient(Exception):
 
 
 def generate(prompt, system_instruction=None, temperature=0.7,
-             deadline_seconds=180, json_mode=True, on_retry=None):
+             deadline_seconds=180, json_mode=True, on_retry=None,
+             use_breaker=True, reasoning_tokens=None):
     """Generate content, retrying transient failures within a time budget.
 
     Raises ModelUnavailable if the deadline passes or the breaker is open. Bad
     keys, exhausted credit and malformed requests raise immediately: retrying
     any of them just burns the budget.
+
+    The deadline is real: no single HTTP attempt may outlive what is left of
+    it. Before, an attempt could run the full REQUEST_TIMEOUT whatever the
+    budget, so a "90-second" chat reply could and did take nearly four minutes.
+
+    `use_breaker=False` takes the caller out of the shared circuit breaker
+    entirely -- it neither trips it nor is blocked by it. That is for live
+    chat. The breaker exists so a spark stops paying the full deadline on a
+    model that is clearly down; a person sending a message is not a retry loop,
+    and chat could only ever be un-blocked by the scheduler thread, so three
+    slow replies silenced her until the next porch visit.
     """
     global _consecutive_failures
 
     if not OPENROUTER_API_KEY:
         raise ModelAuthError("OPENROUTER_API_KEY is not configured")
 
-    if breaker_open():
+    if use_breaker and breaker_open():
         raise ModelUnavailable(
             f"{MODEL_NAME} failed {_consecutive_failures} times in a row; "
             "skipping further calls until the next spark"
@@ -268,14 +299,20 @@ def generate(prompt, system_instruction=None, temperature=0.7,
         messages.append({"role": "system", "content": system_instruction})
     messages.append({"role": "user", "content": prompt})
 
-    deadline = time.monotonic() + deadline_seconds
+    reasoning_tokens = reasoning_tokens or REASONING_MAX_TOKENS
+    started = time.monotonic()
+    deadline = started + deadline_seconds
     attempt = 0
     last_error = None
 
     while True:
+        # Never let one attempt outlive the whole budget.
+        attempt_timeout = min(REQUEST_TIMEOUT, max(1.0, deadline - time.monotonic()))
         try:
-            result = _request(messages, temperature, json_mode)
-            _consecutive_failures = 0
+            result = _request(messages, temperature, json_mode, timeout=attempt_timeout,
+                              reasoning_tokens=reasoning_tokens)
+            if use_breaker:
+                _consecutive_failures = 0
             return result
         except (ModelAuthError, ModelCreditError):
             raise
@@ -287,10 +324,12 @@ def generate(prompt, system_instruction=None, temperature=0.7,
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            _consecutive_failures += 1
+            if use_breaker:
+                _consecutive_failures += 1
+            # Report the time actually spent, not the budget that was set.
             raise ModelUnavailable(
-                f"{MODEL_NAME} unavailable after {deadline_seconds}s "
-                f"({attempt + 1} attempts): {last_error}"
+                f"{MODEL_NAME} gave no usable reply in {time.monotonic() - started:.0f}s "
+                f"({attempt + 1} attempt{'s' if attempt else ''}): {last_error}"
             )
 
         delay = min(DELAYS[min(attempt, len(DELAYS) - 1)], remaining)

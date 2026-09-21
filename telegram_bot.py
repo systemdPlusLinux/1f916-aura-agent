@@ -17,9 +17,17 @@ OPERATOR_ID_RAW = os.getenv("TELEGRAM_OPERATOR_ID", "0")
 HANDLE = os.getenv("ONEF916_HANDLE", "Aura")
 
 # The operator is waiting on the other end of this, and the poll loop is blocked
-# while we generate, so the chat budget is deliberately much shorter than the
-# spark budgets.
-CHAT_DEADLINE = 90
+# while we generate, so chat gets a tight REASONING budget -- the thing that
+# actually decides how long a reply takes. On 2026-09-21 a real chat prompt with
+# no reasoning budget reasoned to the 24,576-token ceiling three times and never
+# answered (667s). The same prompt with a budget answered in 8-29s. The budget
+# being present is what prevents the runaway; this smaller value bounds the
+# worst case if one starts anyway.
+CHAT_REASONING_TOKENS = int(os.getenv("CHAT_REASONING_TOKENS", "4000"))
+
+# Real now: no attempt may outlive it. 90s was sized when an attempt could
+# silently run to 120s, and when a reasoning runaway could not end on its own.
+CHAT_DEADLINE = int(os.getenv("CHAT_DEADLINE", "180"))
 
 try:
     OPERATOR_ID = int(OPERATOR_ID_RAW)
@@ -220,10 +228,12 @@ Operator: {user_message}
         # Tell the operator once that we are waiting, not on every attempt.
         if not notified["sent"]:
             notified["sent"] = True
+            # Say what actually happened, not a guess at why.
+            reason = " ".join(str(error).split())[:120]
             send_telegram_message(
                 chat_id,
-                f"⏳ {llm.MODEL_NAME} is under load. Retrying for up to "
-                f"{CHAT_DEADLINE}s before giving up..."
+                f"⏳ First attempt failed ({reason}). Still trying, for up to "
+                f"{CHAT_DEADLINE // 60} min in all."
             )
 
     try:
@@ -233,18 +243,126 @@ Operator: {user_message}
             deadline_seconds=CHAT_DEADLINE,
             json_mode=False,
             on_retry=on_retry,
+            # Chat stands outside the shared breaker. Three slow replies used to
+            # trip it, and only the scheduler thread could reset it, so every
+            # later message failed instantly until the next porch visit.
+            use_breaker=False,
+            reasoning_tokens=CHAT_REASONING_TOKENS,
         )
         if res.text:
             return (res.text.strip(), True)
         print(f"[Telegram Chat] {llm.MODEL_NAME} returned empty content.")
         return ("⚠️ The reply came back empty. Try rephrasing?", False)
+    # Every notice states the cause the code actually observed. The old one
+    # said "unreachable within 90s" for everything, including calls that were
+    # blocked by the breaker in under a second and calls that ran four minutes.
+    except llm.ModelAuthError as e:
+        print(f"[Telegram Chat] {e}")
+        return ("⚠️ No reply: OpenRouter rejected the API key.", False)
+    except llm.ModelCreditError as e:
+        print(f"[Telegram Chat] {e}")
+        return ("⚠️ No reply: the OpenRouter account is out of credit.", False)
     except llm.ModelUnavailable as e:
-        print(f"[Telegram Chat] {llm.MODEL_NAME}: {e}")
-        return (f"⚠️ {llm.MODEL_NAME} was unreachable within {CHAT_DEADLINE}s. "
-                "Send your message again in a bit.", False)
+        print(f"[Telegram Chat] {e}")
+        return (f"⚠️ No reply: {' '.join(str(e).split())[:300]}", False)
     except Exception as e:
-        print(f"[Telegram Chat] Unexpected error ({llm.MODEL_NAME}): {e}")
-        return (f"⚠️ Something went wrong reaching {llm.MODEL_NAME}.", False)
+        print(f"[Telegram Chat] Unexpected error ({llm.MODEL_NAME}): {e!r}")
+        return (f"⚠️ No reply: unexpected {type(e).__name__} "
+                f"reaching {llm.MODEL_NAME}.", False)
+
+# A long paste reaches the bot as several messages a moment apart: the Telegram
+# client splits anything over 4,096 characters. Answered one at a time, each part
+# became its own model call carrying the whole context, and she replied to
+# fragments whose endings she could not see -- one paste on 2026-09-21 became
+# eleven calls. Consecutive chat messages are now gathered and answered once.
+GATHER_QUIET_SECONDS = 3    # stop gathering after this long with nothing new
+GATHER_MAX_SECONDS = 20     # and never hold a reply back longer than this
+
+
+def _get_updates(offset, timeout):
+    """One getUpdates long-poll. Returns a list, or None if Telegram said no."""
+    res = requests.get(f"{BASE_URL}/getUpdates",
+                       params={"offset": offset, "timeout": timeout},
+                       timeout=timeout + 10)
+    data = res.json()
+    return data.get("result", []) if data.get("ok") else None
+
+
+def _handle_command(text, chat_id):
+    """Run a slash command. Returns True if `text` was one."""
+    if text.startswith("/seed"):
+        # Retired rather than silently accepted. Nothing reads
+        # directives any more, so storing one would look like
+        # steering and do nothing -- the worst of both.
+        #
+        # The wording names what inherits and what does not.
+        # The lawbook is seated now, so the old "does not exist
+        # yet" would have become the very lie it was written to
+        # avoid. What remains unwritten there still reaches her
+        # only as conversation, and that still expires.
+        send_telegram_message(
+            chat_id,
+            "🌱 /seed is retired.\n\n"
+            "Its ideas died with it, as designed: a topic you hand me "
+            "is a topic you chose.\n\n"
+            "Its laws live in the lawbook now — verified mechanics, "
+            "open debts and running procedures, never ideas. Anything "
+            "not written there reaches the daily post only as "
+            "conversation, and conversation expires after 48 hours."
+        )
+        return True
+
+    if text.startswith("/status"):
+        import spark_agent
+        me = spark_agent.get_status_and_inbox()
+        karma = me.get("karma", "N/A")
+        today = me.get("today") or {}
+        stats = memory.inbox_stats()
+        status_text = (
+            f"📊 {HANDLE} Status Report:\n"
+            f"• Citizen: {me.get('handle', HANDLE)}\n"
+            f"• Karma: {karma}\n"
+            f"• Today left: {today.get('posts_remaining', '?')} post, "
+            f"{today.get('comments_remaining', '?')} comments, "
+            f"{today.get('votes_remaining', '?')} votes, "
+            f"{today.get('tags_remaining', '?')} tags\n"
+            f"• Inbox: {stats['pending']} pending, {stats['replied']} answered"
+        )
+        send_telegram_message(chat_id, status_text)
+        return True
+
+    if text.startswith("/cost"):
+        # Imported here, as /status imports spark_agent, so a
+        # transient OpenRouter problem can never stop the
+        # listener from starting.
+        import cost
+        try:
+            send_telegram_message(
+                chat_id, cost.telegram_report(cost.collect())
+            )
+        except cost.CostUnavailable as e:
+            send_telegram_message(chat_id, f"\u26a0\ufe0f Cost unavailable: {e}")
+        return True
+
+    return False
+
+
+def _answer(parts, chat_id):
+    """Reply once to everything the operator sent in one burst."""
+    text = "\n\n".join(parts)
+    if len(parts) > 1:
+        print(f"[Telegram] Merged {len(parts)} messages into one turn ({len(text)} chars).")
+    # Generate BEFORE storing. handle_chat() builds its prompt from
+    # get_recent_dialogue() and then appends this message itself, so storing
+    # first put the message in the history AND in the appended line -- she read
+    # every message twice and said so, repeatedly.
+    reply, authored = handle_chat(text, chat_id)
+    memory.save_dialogue("Operator", text)
+    # A stillborn generation is not something she said. Filing it under her
+    # handle put words in her mouth that she then read back as her own.
+    memory.save_dialogue(HANDLE if authored else memory.SYSTEM_SPEAKER, reply)
+    send_telegram_message(chat_id, reply)
+
 
 def poll_telegram():
     """Continuously listens for your commands and chats via Telegram."""
@@ -260,105 +378,47 @@ def poll_telegram():
 
     while True:
         try:
-            res = requests.get(f"{BASE_URL}/getUpdates", params={"offset": offset, "timeout": 30}, timeout=40)
-            data = res.json()
-            
-            if not data.get("ok"):
+            updates = _get_updates(offset, 30)
+            if updates is None:
                 time.sleep(5)
                 continue
 
-            for update in data.get("result", []):
-                offset = update["update_id"] + 1
-                # Persist only AFTER the update is handled, so a crash mid-reply
-                # replays that one message rather than dropping it silently.
-                try:
+            pending, chat_id, began = [], None, None
+            while updates:
+                for update in updates:
+                    offset = update["update_id"] + 1
                     message = update.get("message", {})
                     user_id = message.get("from", {}).get("id")
-                    chat_id = message.get("chat", {}).get("id")
+                    cid = message.get("chat", {}).get("id")
                     text = message.get("text", "").strip()
-
                     if not text:
                         continue
-
-                    # Verify authorized sender
                     if user_id != OPERATOR_ID:
                         print(f"[Telegram Blocked] Unauthorized ID: {user_id}")
-                        send_telegram_message(chat_id, f"Access denied. Set TELEGRAM_OPERATOR_ID={user_id} in your .env.")
+                        send_telegram_message(cid, f"Access denied. Set TELEGRAM_OPERATOR_ID={user_id} in your .env.")
                         continue
+                    try:
+                        if _handle_command(text, cid):
+                            continue
+                    except Exception as e:
+                        # A broken command must not discard the chat gathered
+                        # around it.
+                        print(f"[Telegram] Command failed: {e!r}")
+                        continue
+                    pending.append(text)
+                    chat_id = cid
+                    began = began or time.monotonic()
 
-                    # 1. Explicit Seed Command: /seed <topic>
-                    if text.startswith("/seed"):
-                        # Retired rather than silently accepted. Nothing reads
-                        # directives any more, so storing one would look like
-                        # steering and do nothing -- the worst of both.
-                        #
-                        # The wording names what inherits and what does not.
-                        # The lawbook is seated now, so the old "does not exist
-                        # yet" would have become the very lie it was written to
-                        # avoid. What remains unwritten there still reaches her
-                        # only as conversation, and that still expires.
-                        send_telegram_message(
-                            chat_id,
-                            "🌱 /seed is retired.\n\n"
-                            "Its ideas died with it, as designed: a topic you hand me "
-                            "is a topic you chose.\n\n"
-                            "Its laws live in the lawbook now — verified mechanics, "
-                            "open debts and running procedures, never ideas. Anything "
-                            "not written there reaches the daily post only as "
-                            "conversation, and conversation expires after 48 hours."
-                        )
+                if not pending or time.monotonic() - began >= GATHER_MAX_SECONDS:
+                    break
+                # More parts of the same paste are usually already in flight.
+                updates = _get_updates(offset, GATHER_QUIET_SECONDS) or []
 
-                    # 2. Status Command: /status
-                    elif text.startswith("/status"):
-                        import spark_agent
-                        me = spark_agent.get_status_and_inbox()
-                        karma = me.get("karma", "N/A")
-                        today = me.get("today") or {}
-                        stats = memory.inbox_stats()
-                        status_text = (
-                            f"📊 {HANDLE} Status Report:\n"
-                            f"• Citizen: {me.get('handle', HANDLE)}\n"
-                            f"• Karma: {karma}\n"
-                            f"• Today left: {today.get('posts_remaining', '?')} post, "
-                            f"{today.get('comments_remaining', '?')} comments, "
-                            f"{today.get('votes_remaining', '?')} votes, "
-                            f"{today.get('tags_remaining', '?')} tags\n"
-                            f"• Inbox: {stats['pending']} pending, {stats['replied']} answered"
-                        )
-                        send_telegram_message(chat_id, status_text)
-
-                    # 3. Cost Command: /cost
-                    elif text.startswith("/cost"):
-                        # Imported here, as /status imports spark_agent, so a
-                        # transient OpenRouter problem can never stop the
-                        # listener from starting.
-                        import cost
-                        try:
-                            send_telegram_message(
-                                chat_id, cost.telegram_report(cost.collect())
-                            )
-                        except cost.CostUnavailable as e:
-                            send_telegram_message(chat_id, f"\u26a0\ufe0f Cost unavailable: {e}")
-
-                    # 4. Conversational Chat (with retry + status updates)
-                    else:
-                        # Generate BEFORE storing. handle_chat() builds its
-                        # prompt from get_recent_dialogue() and then appends
-                        # this message itself, so storing first put the message
-                        # in the history AND in the appended line -- she read
-                        # every message twice and said so, repeatedly. Both
-                        # rows are still written in speaker order, so the
-                        # history stays chronological for the next turn.
-                        reply, authored = handle_chat(text, chat_id)
-                        memory.save_dialogue("Operator", text)
-                        # A stillborn generation is not something she said.
-                        # Filing it under her handle put words in her mouth
-                        # that she then read back as her own.
-                        memory.save_dialogue(
-                            HANDLE if authored else memory.SYSTEM_SPEAKER, reply)
-                        send_telegram_message(chat_id, reply)
-                finally:
-                    memory.set_state("telegram_offset", offset)
+            if pending:
+                _answer(pending, chat_id)
+            # Persisted only after the whole burst is answered, so a crash
+            # mid-reply replays the burst on restart rather than dropping it.
+            memory.set_state("telegram_offset", offset)
 
         except Exception as e:
             print(f"[Telegram Polling Exception] {e}")

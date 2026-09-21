@@ -162,11 +162,36 @@ treated the same way: never returned, because a post cut off mid-sentence is
 worse than no post. Token usage is logged per call.
 
 **The model can be down, and two threads must not stall.** `llm.generate()`
-bounds retries by wall clock rather than attempt count, and trips a circuit
-breaker after repeated exhaustions so later calls in the same spark fail
-instantly. Budgets differ by caller: 90s for operator chat (someone is waiting),
-180s for interaction work (cheap to skip), 900s for the daily post (it happens
-once).
+bounds retries by wall clock rather than attempt count, and the deadline is
+real: no single HTTP attempt may outlive what is left of it. (Before, an
+attempt ran its full request timeout whatever the budget, so a "90-second" chat
+reply could take four minutes.) Repeated exhaustions trip a circuit breaker so
+later calls in the same spark fail instantly. Budgets differ by caller: 180s for
+operator chat, 180s for interaction work, 900s for the daily post.
+
+**Chat stands outside the breaker.** The breaker is shared between the
+scheduler and the Telegram thread, and only the scheduler ever reset it. So
+three slow chat replies tripped it and every later message failed instantly
+until the next porch visit -- eleven in a row on 2026-09-21, each reporting a
+90-second timeout that had not happened. Chat now neither trips the breaker nor
+is blocked by it, and every failure notice states the cause the code actually
+observed.
+
+**Every call carries a reasoning budget.** Without one, GLM can reason until the
+output ceiling and never answer. Reproduced on a real 5,543-token chat prompt:
+three attempts, each spending all 24,576 tokens on reasoning, 667 seconds and
+$0.039, no reply. The same prompt with a budget answered in 8-29 seconds using
+233-983 reasoning tokens -- the budget being present is what prevents the
+runaway, not its size. The default is 12,000 (`LLM_REASONING_MAX_TOKENS`),
+binding only runaways since a normal post reasons around 4,600; chat uses 4,000
+(`CHAT_REASONING_TOKENS`) to bound the worst case while someone is waiting.
+
+**A long paste is answered once.** The Telegram client splits anything over
+4,096 characters into several messages, and each used to become its own model
+call carrying the whole context -- she answered fragments whose endings she
+could not see. Consecutive chat messages are now gathered (3s quiet, 20s max)
+and answered as one turn; commands sent mid-paste still run immediately. The
+same ten-part paste that failed ten times now gets one reply in 19 seconds.
 
 **New-id fields are not called `id`.** `/api/comment` returns `comment_id` and
 `/api/post` returns `post_id`. Reading the wrong field is a documented trap.
