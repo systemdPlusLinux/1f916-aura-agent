@@ -30,6 +30,10 @@ CHAT_REASONING_TOKENS = int(os.getenv("CHAT_REASONING_TOKENS", "4000"))
 # silently run to 120s, and when a reasoning runaway could not end on its own.
 CHAT_DEADLINE = int(os.getenv("CHAT_DEADLINE", "180"))
 
+# How many conversation turns chat shows her. Named, not inlined, so the facts
+# block can report the value actually in effect.
+CHAT_TURNS = 8
+
 try:
     OPERATOR_ID = int(OPERATOR_ID_RAW)
 except ValueError:
@@ -198,7 +202,7 @@ def handle_chat(user_message, chat_id):
     """
     # The conversation as the operator sees it: his messages, her replies, and
     # what she did on the board in between, interleaved in time order.
-    recent_context = memory.get_chat_timeline(limit=8)
+    recent_context = memory.get_chat_timeline(limit=CHAT_TURNS)
     # Chat is where she is asked about herself, and where she once said she
     # was almost certainly a Claude-class model while running on GLM. The law
     # is here so that answer has something truer to stand on than introspection.

@@ -25,6 +25,8 @@ silently missing.
 """
 
 import datetime
+import os
+import sys
 import time
 
 import client
@@ -34,6 +36,39 @@ from client import HANDLE
 POSTS_TTL = 30 * 60
 CLOCK_TTL = 10 * 60
 POSTS_SHOWN = 8
+
+_REPO = os.path.dirname(os.path.abspath(__file__))
+
+
+def _git_head():
+    """The commit the repository's HEAD points at, read from .git directly --
+    the image has no git binary. None if it cannot be read."""
+    try:
+        with open(os.path.join(_REPO, ".git", "HEAD")) as f:
+            head = f.read().strip()
+        if not head.startswith("ref: "):
+            return head
+        ref = head[5:]
+        loose = os.path.join(_REPO, ".git", ref)
+        if os.path.exists(loose):
+            with open(loose) as f:
+                return f.read().strip()
+        with open(os.path.join(_REPO, ".git", "packed-refs")) as f:
+            for line in f:
+                if line.strip().endswith(" " + ref):
+                    return line.split()[0]
+    except OSError:
+        pass
+    return None
+
+
+# Captured once, at import -- which is container start. The code she runs is
+# whatever was loaded then, so this, not the repository's current HEAD, is her
+# version. The two are compared on every read, so a commit that is on disk but
+# not yet running is reported as exactly that instead of being silently assumed
+# live: the version skew she named in id=184.
+LOADED_COMMIT = _git_head()
+LOADED_AT = time.time()
 
 _cache = {"offset": None, "offset_at": 0.0, "posts": None, "posts_at": 0.0}
 
@@ -106,6 +141,35 @@ def status_by_id():
     return {p.get("id"): post_status(p) for p in posts}
 
 
+def _settings_lines():
+    """Her configuration as the running modules hold it right now.
+
+    Read from the loaded modules rather than copied here, so the numbers can
+    never disagree with what is in effect. Uses sys.modules instead of imports:
+    telegram_bot and spark_agent import this module, and anything not loaded
+    (a standalone run) is simply left out rather than guessed.
+    """
+    lines = []
+    head = _git_head()
+    build = f"commit {LOADED_COMMIT[:7]}" if LOADED_COMMIT else "commit unknown"
+    lines.append(f"Running build: {build}, loaded {_fmt(LOADED_AT)}")
+    if head and LOADED_COMMIT and head != LOADED_COMMIT:
+        lines.append(f"  Commit {head[:7]} is on disk but NOT running until the next restart.")
+
+    m = sys.modules
+    llm, tb, sa = m.get("llm"), m.get("telegram_bot"), m.get("spark_agent")
+    if llm:
+        chat = f", chat {tb.CHAT_REASONING_TOKENS:,}" if tb else ""
+        lines.append(f"Model:         {llm.MODEL_NAME}, reasoning budget {llm.REASONING_MAX_TOKENS:,}{chat}")
+    if tb:
+        lines.append(f"Chat memory:   the newest {tb.CHAT_TURNS} conversation turns, plus your board "
+                     "actions from the same span")
+    if sa:
+        lines.append(f"Post memory:   {sa.DIALOGUE_STEER_HOURS}h of conversation, capped at "
+                     f"{sa.DIALOGUE_STEER_MAX_CHARS:,} chars; daily post from {sa.DAILY_POST_EARLIEST} UTC")
+    return lines
+
+
 def system_facts(include_posts=True):
     """The labelled block placed at the top of every prompt that speaks for her."""
     t, source = now()
@@ -115,7 +179,7 @@ def system_facts(include_posts=True):
         "",
         f"Current time: {_fmt(t, seconds=True)} ({source})",
         f"Generation:   {lawbook.current_generation()}",
-    ]
+    ] + _settings_lines()
     if include_posts:
         posts = recent_posts()
         if posts is None:

@@ -68,8 +68,6 @@ actually still missing before choosing.
 - **`show_prompt.py`:** prints the fully assembled daily-post or chat prompt
   with no model call. It must not call `lawbook.for_prompt()`, because that runs
   `audit()`, which writes state and sends Telegram messages.
-- **Version stamp** in the facts block: the deployed commit, read from
-  `.git/HEAD`. She asked for this in id=184.
 - **`activity_log` backfill** from `/api/me/history`. The log started empty
   when item 4 deployed.
 - **Housekeeping:** delete the `openrouter-glm` branch; remove the unused

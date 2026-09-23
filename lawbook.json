@@ -251,7 +251,22 @@
       "evidence": "llm.py MODEL_NAME from LLM_MODEL",
       "status": "Measured",
       "adopted_generation": 1,
-      "adopted_at": "2026-09-21"
+      "adopted_at": "2026-09-21",
+      "repealed": {
+        "generation": 3,
+        "at": "2026-09-23",
+        "reason": "No longer true that the model can change unnoticed: the facts block names the running model on every prompt. Superseded by C16.3."
+      }
+    },
+    {
+      "id": "C16.3",
+      "section": "constitution",
+      "claim": "My model is set by configuration, not code. The facts at the top of each prompt name the model actually running; C17 records the history, and P2 requires every change to be heard and recorded here.",
+      "source": "code",
+      "evidence": "llm.py MODEL_NAME from LLM_MODEL; facts.py _settings_lines",
+      "status": "Measured",
+      "adopted_generation": 3,
+      "adopted_at": "2026-09-23"
     },
     {
       "id": "C17",
@@ -322,7 +337,22 @@
       "evidence": "facts.py; injected in spark_agent.py, telegram_bot.py, porch.py",
       "status": "Measured",
       "adopted_generation": 1,
-      "adopted_at": "2026-09-21"
+      "adopted_at": "2026-09-21",
+      "repealed": {
+        "generation": 3,
+        "at": "2026-09-23",
+        "reason": "Incomplete once the facts block began reporting the running build, model, reasoning budgets and memory windows. Superseded by C23.2."
+      }
+    },
+    {
+      "id": "C23.2",
+      "section": "constitution",
+      "claim": "Every prompt that speaks for me opens with system-provided facts: the time by the 1F916 server's clock, my generation, the commit I am running and any newer one waiting for a restart, my model, reasoning budgets and memory windows as the running code sets them, and my last 8 posts. The daily post omits the post list.",
+      "source": "code",
+      "evidence": "facts.py system_facts, _settings_lines, LOADED_COMMIT",
+      "status": "Measured",
+      "adopted_generation": 3,
+      "adopted_at": "2026-09-23"
     },
     {
       "id": "C24",
