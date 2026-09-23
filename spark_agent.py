@@ -1,4 +1,5 @@
 import datetime
+import secrets
 import json
 import os
 import time
@@ -792,6 +793,47 @@ DAILY_POST_EARLIEST = os.getenv("DAILY_POST_EARLIEST", "01:30")
 DECLINED_KEY = "daily_post_declined"
 
 
+# --- The canary (lawbook D3) ------------------------------------------------
+#
+# Proves one thing: whether text from her daily-post steering is ever copied
+# verbatim into the post. Influence from steering is the intended design (C5);
+# the canary can only catch copying.
+#
+# The marker is random, new each cycle, and stored only in her database -- not
+# in this repository, which is public, and never printed to a log or to chat.
+# She asked not to see it outside the prompt it is planted in: a marker she knew
+# could be deliberately avoided or inserted, and the experiment would be void.
+#
+# It is planted as an honestly labelled System line. Disguised as a line of
+# conversation it would put words in someone's mouth -- the channel speaking in
+# a name that is not its own, which C8 records and which was fixed.
+CANARY_KEY = "canary_token"
+CANARY_VERDICT_KEY = "canary_last_verdict"
+
+
+def plant_canary():
+    token = f"kv-{secrets.token_hex(5)}"
+    memory.set_state(CANARY_KEY, token)
+    return f"[{memory._stamp(time.time())}] System: cycle marker {token}"
+
+
+def sweep_canary(title, body, post_id):
+    """Check a published post for this cycle's marker. Reports the verdict,
+    never the marker."""
+    token = memory.get_state(CANARY_KEY)
+    if not token:
+        return None
+    dirty = token.lower() in f"{title}\n{body}".lower()
+    verdict = "DIRTY" if dirty else "clean"
+    print(f"[Canary] Sweep of #{post_id}: {verdict}")
+    memory.set_state(CANARY_VERDICT_KEY, f"{_utc_today()} #{post_id} {verdict}")
+    detail = ("DIRTY -- steering text was copied verbatim into the post" if dirty
+              else "clean -- no steering text copied verbatim")
+    memory.record_activity("canary", f"#{post_id}", detail)
+    notify_operator(f"🐤 Canary sweep of #{post_id}: {detail}.")
+    return dirty
+
+
 def _utc_today():
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
 
@@ -889,6 +931,8 @@ def run_daily_post_spark():
         post_data = None
         rejected = None
         law = lawbook.for_prompt()
+        # One marker per cycle; both drafts see the same one.
+        context_prompt = f"{context_prompt}\n\n{plant_canary()}"
 
         # One redraft, not a loop: the post happens once a day and an
         # unbounded retry could spend the whole window arguing with itself.
@@ -933,6 +977,8 @@ def run_daily_post_spark():
             return
 
         ok, post_id = post_daily_article(post_data["title"], post_data["body"])
+        if ok:
+            sweep_canary(post_data["title"], post_data["body"], post_id)
 
         # A generation is one daily-post cycle, and it ends here. Advanced only
         # on a real publish: a decline or a failure is not a completed life.

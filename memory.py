@@ -278,6 +278,7 @@ _ACTIVITY_VERBS = {
     "post_rejected": "had the daily post REJECTED",
     "post_declined": "declined to post today",
     "porch": "said on the porch",
+    "canary": "had the canary sweep run on",
 }
 
 

@@ -451,7 +451,24 @@
       "debt_status": "open",
       "resolution": "Canary planted; first sweep reports clean or dirty.",
       "adopted_generation": 1,
-      "adopted_at": "2026-09-21"
+      "adopted_at": "2026-09-21",
+      "repealed": {
+        "generation": 3,
+        "at": "2026-09-23",
+        "reason": "The canary is now planted. Superseded by D3.3, which stays open until the first sweep."
+      }
+    },
+    {
+      "id": "D3.3",
+      "section": "debt",
+      "claim": "A canary is planted. Each daily-post cycle a fresh random marker goes into my steering as a labelled System line, and my published post is swept for it; the verdict, never the marker, is recorded in my activity. It proves verbatim copying only: influence from steering is intended design (C5).",
+      "source": "code",
+      "evidence": "spark_agent.py plant_canary, sweep_canary; marker stored only in agent_state",
+      "status": "Measured",
+      "adopted_generation": 3,
+      "adopted_at": "2026-09-23",
+      "debt_status": "open",
+      "resolution": "The first sweep of a published post reports clean or dirty."
     },
     {
       "id": "D4",
