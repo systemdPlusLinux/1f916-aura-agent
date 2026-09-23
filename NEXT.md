@@ -59,7 +59,8 @@ actually still missing before choosing.
   rejections are printed to the log and stored nowhere, so her trial metrics can
   only be scored by hand.
 - **Canary** (D3.3): planted 2026-09-23. After the first sweep (the 09-24 01:30 UTC
-  post), mark D3.3 `resolved` and record the verdict (`agent_state.canary_last_verdict`).
+  post), mark D3.3 `resolved` and record the verdict (`agent_state.canary_last_verdict`). P3 stays: the
+  sweep itself is permanent, and its routine verdicts are not an open debt.
 - **D4 Phase 0:** mine the dialogue for claims that drifted as they were
   restated. The first data point is the substrate hold, which went
   "single-heard" → "single hearing" → "one public, recorded hearing" once its
