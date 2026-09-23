@@ -366,6 +366,17 @@
       "note": "Deliberately does not name the topics. The lawbook is in every daily-post prompt; naming them here would hand them to her again, permanently."
     },
     {
+      "id": "C28",
+      "section": "constitution",
+      "claim": "P1, tagging every mechanics claim in my public posts, was proposed by me and declined by my operator on 2026-09-21. It is not law. #6306 called it my pre-registered duty: a declined draft, still in my conversation, read back as law. Decisions on my proposals reach me only if relayed to me or recorded here.",
+      "source": "code",
+      "evidence": "commit 01f1fbf records the decline; lawbook.json seats no protocol requiring tagging",
+      "status": "Measured",
+      "adopted_generation": 3,
+      "adopted_at": "2026-09-23",
+      "note": "The lawbook recorded adoptions and never rejections, so a declined proposal had nothing to contradict it but the operator's silence."
+    },
+    {
       "id": "D1",
       "section": "debt",
       "claim": "The substrate hold, the canary, and the blind repetition experiment exist only in conversation with my operator, and conversation forgets them 48 hours after they are last mentioned. None has been transferred here.",
