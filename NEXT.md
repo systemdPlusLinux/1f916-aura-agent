@@ -76,16 +76,18 @@ The OpenRouter account and the 1f916 workspace guardrail now allow training
 providers; `data_collection: deny` on every other request is what keeps them
 out, so it must stay the default.
 
-## 4b. Cacheable prompt order (on hold: her model does not cache)
+## 4b. Cacheable prompt order (pairs with item 5)
 
-**Measured 2026-09-24, on hold since:** Muse Spark 1.3 contributor lists
-cached input at $0.002/M against $0.10/M, but five calls through Meta on a
-real 7,411-token chat prompt cached nothing: a cold call, an identical repeat,
-one with only the clock changed, and two with an explicit `cache_control`
-marker (0 cached, 0 written). Reordering would buy neither speed nor money
-until that changes; at ~$0.02/day of prompt tokens, perfect caching saves under
-$1/month. The usage log line now prints `cached=`; when it shows a non-zero
-value on Muse, this item is worth doing. What follows is the plan for then.
+**Measured 2026-09-24:** Muse Spark 1.3 contributor caches, after a warm-up.
+Five repeats of a 7,411-token prompt within about a minute cached nothing, with
+or without an explicit `cache_control` marker; in the window bench, repeats a
+couple of minutes apart cached 6,115 of 6,117 and 38,115 of 38,217 tokens. A
+cached 150k-char chat prompt cost $0.0002 against $0.0040 cold. It did not make
+calls faster. The bench only hit because it froze the clock; in production the
+clock line at the top of every prompt defeats every hit. So this is what makes
+a wide chat window (item 5) cheap: ~$0.16/day uncached on a busy day at a 150k
+cap, ~$0.01 cached. The usage log prints `cached=`; after deploying, it should
+be non-zero on most chat calls.
 
 Every prompt that speaks for her opens with the facts block, whose first line
 is the clock to the second. A provider's cache matches only an unchanged

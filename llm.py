@@ -223,9 +223,11 @@ def _log_usage(usage, provider=None, model=None):
     details = usage.get("completion_tokens_details") or {}
     reasoning = details.get("reasoning_tokens")
     extra = f", reasoning={reasoning}" if reasoning else ""
-    # Printed even when zero: Muse Spark contributor lists a cache price but
-    # cached nothing in five measured calls (2026-09-24), explicit markers
-    # included. This line is how anyone would notice it start.
+    # Printed even when zero, since zero is informative. Muse Spark contributor
+    # caches, but only after a warm-up: five repeats within a minute cached
+    # nothing, while repeats minutes apart cached 99% of the prompt (38,115 of
+    # 38,217 tokens) at 1/50 of the price (2026-09-24). A clock at the top of a
+    # prompt defeats it; this line shows whether the prompts are hitting.
     cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
     if cached is not None:
         extra += f", cached={cached}"
