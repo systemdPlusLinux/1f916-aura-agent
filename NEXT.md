@@ -10,7 +10,7 @@ Items 1-4 of the chat-history plan shipped on 2026-09-21:
 | 4 | `b445a17` | Chat shows her board activity interleaved with the conversation |
 | - | `dae28e3` | Lawbook amended to match (C5.2, C7.3, C9.2, C23-C26) |
 
-Two items remain.
+Two items remain, plus 4b, which should land first.
 
 ## 5. Widen the chat window: time, not rows
 
@@ -25,12 +25,48 @@ memory the operator noticed.
 cap, the way the daily post already works. Board activity follows
 automatically, because it is taken from the span the conversation covers.
 
+**Measured 2026-09-24** (`bench/latency_bench.py`, 24 calls). Over the prior
+week, her chat window at each operator message held a median of 12k chars at 8
+turns, 74k at 24h and 147k at 48h; the busiest 24h held 190k. On that busiest
+moment, with GLM:
+
+| Window | Turns | Reaches back | Prompt | GLM time (Wafer excluded) |
+|---|---|---|---|---|
+| 8 turns (now) | 8 | 1.1h | 23k chars | 5-9s |
+| cap 40k chars | 34 | 7.4h | 55k | 6-24s |
+| cap 80k chars | 48 | 17.3h | 92k | 5s |
+| cap 150k chars | 68 | 20.4h | 165k | 8-87s |
+
+Prompt size barely moves GLM's latency; the cost is money. A 150k prompt is
+~$0.004-0.006 per message against ~$0.0006 today. **Proposed: 24h window, 80k
+char cap**, oldest turns dropped first. Revisit the cap once caching (item 4b)
+works, since cached input is cheaper.
+
 **Care needed:**
-- Prompt size and latency. Reasoning budgets (C26) make latency far less
-  sensitive to prompt size: a 10,335-token merged paste was answered in 19s. But
-  measure a real widened chat prompt before and after. `CHAT_DEADLINE` is 180s.
+- The window's start should move in steps (e.g. hourly), not with every
+  message, or the history block changes at its top each time and never caches.
+- `CHAT_DEADLINE` is 180s, and since `2a88112` it is a hard stop.
 - Repeal C5.2 in the lawbook in the same deploy that makes it false.
 - Test on a copy of the database (see `CLAUDE.md`).
+
+## 4b. Cacheable prompt order (do before item 5)
+
+Every prompt that speaks for her opens with the facts block, whose first line
+is the clock to the second. A provider's cache matches only an unchanged
+prefix, so today nothing after that line can ever hit: the bench only saw cache
+hits because it froze the clock.
+
+**Plan:** stable parts first, volatile parts last. Instructions, then the
+lawbook, then older history; then the clock and recent posts, the newest turns,
+and the new message. Applies to chat, porch, comments and the daily post.
+
+**Then:** swap `LLM_PROVIDER_ORDER` to `novita,gmicloud` (see the comment in
+`llm.py`). GMICloud does not cache; Novita does, at $0.026/M against $0.132/M
+uncached. Measured on Z.AI: the same 150k prompt cost $0.0055 cold and $0.0013
+cached. Check `cached_tokens` in the usage log line after deploying.
+
+**Care needed:** the facts must still be read as the current state, not buried.
+Label them as they are labelled now, wherever they move to.
 
 ## 6. Recall on demand
 
