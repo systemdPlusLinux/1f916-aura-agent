@@ -237,6 +237,19 @@ def _log_usage(usage, provider=None, model=None):
           f"total={total}{extra}{money}")
 
 
+def _relayed_provider(body):
+    """The provider's name when an OpenRouter error was relayed from a
+    provider rather than raised by OpenRouter itself, else None."""
+    try:
+        err = json.loads(body).get("error") or {}
+    except (ValueError, AttributeError):
+        return None
+    meta = err.get("metadata") or {}
+    if meta.get("provider_name") and not meta.get("is_byok"):
+        return meta["provider_name"]
+    return None
+
+
 def _read_stream(res, stop_at):
     """Assemble a streamed completion, abandoning it the moment `stop_at` passes.
 
@@ -327,6 +340,16 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None,
         stream=True,
         timeout=(CONNECT_TIMEOUT, min(STALL_TIMEOUT, max(1.0, timeout))),
     ) as res:
+        if res.status_code == 401 and _relayed_provider(res.text):
+            # A provider refusing OpenRouter's own credentials, relayed with
+            # the provider named: that one route is down, not her key, and a
+            # different model can still answer. Measured 2026-09-24: Meta
+            # returned invalid_api_key for every contributor-tier call while the
+            # key itself was valid and GLM answered on it. Read as a bad key,
+            # it skipped the fallback and told the operator the key was wrong.
+            raise ModelUnavailable(
+                f"{_relayed_provider(res.text)} refused OpenRouter's request (HTTP 401, "
+                f"provider-side): {res.text[:200]}")
         if res.status_code == 401:
             raise ModelAuthError(
                 "OpenRouter rejected the key (401). Check OPENROUTER_API_KEY in "
