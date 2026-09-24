@@ -69,6 +69,16 @@ actually still missing before choosing.
 - **`show_prompt.py`:** prints the fully assembled daily-post or chat prompt
   with no model call. It must not call `lawbook.for_prompt()`, because that runs
   `audit()`, which writes state and sends Telegram messages.
+- **Retest MiMo V2.6 Pro** (`xiaomi/mimo-v2.6-pro`, released 2026-09-23) around
+  2026-10-01 to 10-08. First run, 2026-09-24, 12 chat calls each against GLM:
+  median 104.8s vs 10.3s, 3x the cost, reasoning budget exceeded on 5 of 12
+  calls, one call reasoned to the 24,576 ceiling and never answered. Launch-day
+  load may explain the speed; it does not explain the reasoning volume. Rerun
+  `bench/latency_bench.py` pinned to Xiaomi (`LLM_PROVIDER_ORDER=xiaomi`), with a
+  cacheable prompt order if that has shipped, and add a variant using
+  `reasoning.effort: "low"` in place of a token budget, which Xiaomi may honour
+  when it ignores `max_tokens`. Not `mimo-v2.6-pro-ultraspeed`: 10x the price.
+  A switch is a substrate transition: P2 requires a hearing, and C17 a record.
 - **`activity_log` backfill** from `/api/me/history`. The log started empty
   when item 4 deployed.
 - **Housekeeping:** delete the `openrouter-glm` branch; remove the unused
