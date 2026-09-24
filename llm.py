@@ -106,15 +106,39 @@ PROVIDER_IGNORE = _csv("LLM_PROVIDER_IGNORE", "wafer")
 # "deny" unless LLM_DATA_COLLECTION says otherwise.
 DATA_COLLECTION = os.getenv("LLM_DATA_COLLECTION", "deny").strip().lower()
 
+# A second model for when the first cannot answer: an outage, a withdrawn tier,
+# a request its only provider refuses. It has its own route and data policy, and
+# only comes into play when it differs from MODEL_NAME. The first attempt goes
+# to MODEL_NAME; every retry after a failure goes here.
+FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "z-ai/glm-5.3-flash").strip()
+FALLBACK_PROVIDER_ORDER = _csv("LLM_FALLBACK_PROVIDER_ORDER", "gmicloud,novita")
+FALLBACK_DATA_COLLECTION = os.getenv("LLM_FALLBACK_DATA_COLLECTION", "deny").strip().lower()
 
-def _provider_prefs():
-    prefs = {"require_parameters": True, "data_collection": DATA_COLLECTION}
-    if PROVIDER_ORDER:
-        prefs["order"] = PROVIDER_ORDER
+# The share of a call's deadline the first model may spend while a fallback is
+# waiting. Without it a slow first attempt uses the whole budget, since an
+# attempt may otherwise run to the deadline, and leaves the fallback no time.
+PRIMARY_SHARE = float(os.getenv("LLM_PRIMARY_SHARE", "0.6"))
+
+
+def _provider_prefs(order=None, data_collection=None):
+    order = PROVIDER_ORDER if order is None else order
+    prefs = {"require_parameters": True,
+             "data_collection": data_collection or DATA_COLLECTION}
+    if order:
+        prefs["order"] = order
         prefs["allow_fallbacks"] = PROVIDER_FALLBACKS
     if PROVIDER_IGNORE:
         prefs["ignore"] = PROVIDER_IGNORE
     return prefs
+
+
+def _route():
+    """[(model, provider prefs)] in the order they are tried."""
+    chain = [(MODEL_NAME, _provider_prefs())]
+    if FALLBACK_MODEL and FALLBACK_MODEL != MODEL_NAME:
+        chain.append((FALLBACK_MODEL,
+                      _provider_prefs(FALLBACK_PROVIDER_ORDER, FALLBACK_DATA_COLLECTION)))
+    return chain
 
 # Backoff schedule; the last value repeats until the deadline is reached.
 DELAYS = [4, 8, 16, 32, 64]
@@ -185,10 +209,11 @@ def _unfence(text):
     return match.group(1) if match else text
 
 
-def _log_usage(usage, provider=None):
+def _log_usage(usage, provider=None, model=None):
+    model = model or MODEL_NAME
     via = f" via {provider}" if provider else ""
     if not usage:
-        print(f"[{MODEL_NAME}]{via} no usage reported")
+        print(f"[{model}]{via} no usage reported")
         return
     prompt = usage.get("prompt_tokens")
     completion = usage.get("completion_tokens")
@@ -198,7 +223,7 @@ def _log_usage(usage, provider=None):
     extra = f", reasoning={reasoning}" if reasoning else ""
     cost = usage.get("cost")
     money = f", cost=${cost:.6f}" if isinstance(cost, (int, float)) else ""
-    print(f"[{MODEL_NAME}]{via} tokens: prompt={prompt}, completion={completion}, "
+    print(f"[{model}]{via} tokens: prompt={prompt}, completion={completion}, "
           f"total={total}{extra}{money}")
 
 
@@ -249,7 +274,8 @@ def _read_stream(res, stop_at):
     return "".join(content), finish, usage, model, provider
 
 
-def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None):
+def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None,
+             model=None, prefs=None):
     """One HTTP call, which may take at most `timeout` seconds in all. Returns a
     Completion, or raises for the caller to judge.
 
@@ -262,12 +288,12 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None):
     """
     global _usage_ext
     payload = {
-        "model": MODEL_NAME,
+        "model": model or MODEL_NAME,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": MAX_TOKENS,
         "stream": True,
-        "provider": _provider_prefs(),
+        "provider": prefs or _provider_prefs(),
     }
     include_usage = _usage_ext
     if include_usage:
@@ -305,7 +331,11 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None):
             # Transient: worth waiting out inside the caller's deadline.
             raise _Transient(f"HTTP {res.status_code}: {res.text[:200]}")
         if res.status_code != 200:
-            if include_usage and 400 <= res.status_code < 500:
+            # Only a rejection that names the usage field is about the usage
+            # field. Treating every 4xx as one turned "no endpoint can serve
+            # this" into a silent loss of cost reporting for the whole process.
+            if (include_usage and 400 <= res.status_code < 500
+                    and "usage" in res.text.lower()):
                 # The one field here that is an extension rather than core schema.
                 # Losing cost reporting is a far better outcome than a silent agent,
                 # so drop it for the rest of the process and let the retry stand.
@@ -314,13 +344,15 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None):
                     f"HTTP {res.status_code} with usage accounting on; dropping it "
                     f"and retrying: {res.text[:160]}"
                 )
-            # Other 400s are our own malformed request. Retrying sends identical
-            # bytes and fails identically, so fail loudly now.
+            # Any other 4xx -- a malformed request, no endpoint that can serve
+            # it, a data policy that excludes every provider -- fails the same
+            # way on a retry to the same model, so it is not retried here.
+            # generate() may still try the fallback model.
             raise ModelUnavailable(f"HTTP {res.status_code}: {res.text[:300]}")
 
         content, finish, usage, model, provider = _read_stream(res, stop_at)
 
-    _log_usage(usage, provider)
+    _log_usage(usage, provider, model or MODEL_NAME)
 
     if finish == "length":
         # Reasoning tokens count toward the same ceiling as the answer, so a
@@ -396,22 +428,39 @@ def generate(prompt, system_instruction=None, temperature=0.7,
     messages.append({"role": "user", "content": prompt})
 
     reasoning_tokens = reasoning_tokens or REASONING_MAX_TOKENS
+    chain = _route()
     started = time.monotonic()
     deadline = started + deadline_seconds
     attempt = 0
     last_error = None
 
     while True:
-        # An attempt may use whatever budget is left, and no more.
-        attempt_timeout = max(1.0, deadline - time.monotonic())
+        step = min(attempt, len(chain) - 1)
+        model, prefs = chain[step]
+        has_next = step + 1 < len(chain)
+        # An attempt may use whatever budget is left, and no more -- except
+        # the first model's, which leaves a share for the fallback.
+        left = deadline - time.monotonic()
+        if has_next:
+            left = min(left, deadline_seconds * PRIMARY_SHARE)
+        attempt_timeout = max(1.0, left)
         try:
             result = _request(messages, temperature, json_mode, timeout=attempt_timeout,
-                              reasoning_tokens=reasoning_tokens)
+                              reasoning_tokens=reasoning_tokens, model=model, prefs=prefs)
             if use_breaker:
                 _consecutive_failures = 0
             return result
         except (ModelAuthError, ModelCreditError):
             raise
+        except ModelUnavailable as e:
+            # This model's route cannot serve the request at all. Only a
+            # different model can help.
+            if not has_next:
+                if step:
+                    raise ModelUnavailable(
+                        f"{chain[0][0]} failed ({last_error}); {model} failed ({e})") from e
+                raise
+            last_error = e
         except _Transient as e:
             last_error = e
         except requests.RequestException as e:
@@ -422,21 +471,28 @@ def generate(prompt, system_instruction=None, temperature=0.7,
         if remaining <= 0:
             if use_breaker:
                 _consecutive_failures += 1
+            tried = " then ".join(m for m, _ in chain[:step + 1])
             # Report the time actually spent, not the budget that was set.
             raise ModelUnavailable(
-                f"{MODEL_NAME} gave no usable reply in {time.monotonic() - started:.0f}s "
+                f"{tried} gave no usable reply in {time.monotonic() - started:.0f}s "
                 f"({attempt + 1} attempt{'s' if attempt else ''}): {last_error}"
             )
 
-        delay = min(DELAYS[min(attempt, len(DELAYS) - 1)], remaining)
+        # Moving to the fallback is immediate; backing off is for retrying the
+        # same model.
+        delay = 0 if has_next else min(DELAYS[min(attempt, len(DELAYS) - 1)], remaining)
         attempt += 1
         if on_retry:
             try:
                 on_retry(attempt, delay, last_error)
             except Exception:
                 pass
-        print(f"[{MODEL_NAME}] attempt {attempt} failed ({last_error}); "
-              f"retrying in {delay:.0f}s, {remaining:.0f}s of budget left")
+        if has_next:
+            print(f"[{model}] attempt {attempt} failed ({last_error}); "
+                  f"falling back to {chain[step + 1][0]}, {remaining:.0f}s of budget left")
+        else:
+            print(f"[{model}] attempt {attempt} failed ({last_error}); "
+                  f"retrying in {delay:.0f}s, {remaining:.0f}s of budget left")
         time.sleep(delay)
 
 

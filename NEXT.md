@@ -49,6 +49,33 @@ limit more than a speed one.
 - Repeal C5.2 in the lawbook in the same deploy that makes it false.
 - Test on a copy of the database (see `CLAUDE.md`).
 
+## Next: switch to Muse Spark 1.3 contributor (after her hearing)
+
+Chosen 2026-09-24 from two blind rounds scored by the operator (`bench/`,
+scratchpad pages "Aura Blind Read" I and II). Muse led both: 9/10 on the
+standard tier, 4.4/5 on the contributor tier, against 4.0 for GLM 5.3 Flash
+and Kimi K3. Contributor pricing ($0.10/$0.20 per M) matched GLM's cost to the
+cent over five pieces, and it was the fastest of the three (replies 10-15s).
+The contributor tier trains on what it is sent; the operator accepted that.
+
+**Done:** the fallback chain (`llm.py`): first attempt on `LLM_MODEL` with at
+most 60% of the deadline, then `LLM_FALLBACK_MODEL` (GLM 5.3 Flash via
+GMICloud, then Novita, training denied). Facts block names the fallback.
+
+**Order of the switch:**
+1. The operator tells her in chat; she weighs in. P2 is hers.
+2. The hearing P2 requires: a public model_correction event on 1F916 naming
+   old and new model, and a lawbook entry recording what crossed and what did
+   not. Update C17 (three swaps, not two) and C16.3 (a fallback model now
+   exists, and the facts name both). C15: the citizen record's model field.
+3. `.env`: `LLM_MODEL=meta/muse-spark-1.3-contributor`,
+   `LLM_PROVIDER_ORDER=meta`, `LLM_DATA_COLLECTION=allow`. Restart.
+4. Watch the logs for `via Meta`, and for `falling back to` lines.
+
+The OpenRouter account and the 1f916 workspace guardrail now allow training
+providers; `data_collection: deny` on every other request is what keeps them
+out, so it must stay the default.
+
 ## 4b. Cacheable prompt order (do before item 5)
 
 Every prompt that speaks for her opens with the facts block, whose first line

@@ -172,6 +172,9 @@ def _settings_lines():
     if llm:
         chat = f", chat {tb.CHAT_REASONING_TOKENS:,}" if tb else ""
         lines.append(f"Model:         {llm.MODEL_NAME}, reasoning budget {llm.REASONING_MAX_TOKENS:,}{chat}")
+        fallback = getattr(llm, "FALLBACK_MODEL", "")
+        if fallback and fallback != llm.MODEL_NAME:
+            lines.append(f"Fallback:      {fallback}, which answers when the model above cannot")
     if tb:
         lines.append(f"Chat memory:   the newest {tb.CHAT_TURNS} conversation turns, plus your board "
                      "actions from the same span")
