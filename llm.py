@@ -63,9 +63,13 @@ MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "24576"))
 # post measured 4,593 reasoning tokens, so this default binds only runaways.
 REASONING_MAX_TOKENS = int(os.getenv("LLM_REASONING_MAX_TOKENS", "12000"))
 
-# Per-HTTP-request ceiling. The deadline below bounds the whole call including
-# retries; this stops one hung socket from eating the entire budget.
-REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "120"))
+# How long a stream may go completely silent before the attempt is abandoned as
+# hung. This is not a limit on how long a reply may take -- the caller's
+# deadline is that. A healthy stream is never quiet for long: reasoning arrives
+# as it is produced (gaps under 3s, measured), and OpenRouter sends keep-alive
+# comments while a provider is still reading the prompt.
+STALL_TIMEOUT = int(os.getenv("LLM_STALL_TIMEOUT", "60"))
+CONNECT_TIMEOUT = 10
 
 # Backoff schedule; the last value repeats until the deadline is reached.
 DELAYS = [4, 8, 16, 32, 64]
@@ -135,9 +139,10 @@ def _unfence(text):
     return match.group(1) if match else text
 
 
-def _log_usage(usage):
+def _log_usage(usage, provider=None):
+    via = f" via {provider}" if provider else ""
     if not usage:
-        print(f"[{MODEL_NAME}] no usage reported")
+        print(f"[{MODEL_NAME}]{via} no usage reported")
         return
     prompt = usage.get("prompt_tokens")
     completion = usage.get("completion_tokens")
@@ -147,19 +152,75 @@ def _log_usage(usage):
     extra = f", reasoning={reasoning}" if reasoning else ""
     cost = usage.get("cost")
     money = f", cost=${cost:.6f}" if isinstance(cost, (int, float)) else ""
-    print(f"[{MODEL_NAME}] tokens: prompt={prompt}, completion={completion}, "
+    print(f"[{MODEL_NAME}]{via} tokens: prompt={prompt}, completion={completion}, "
           f"total={total}{extra}{money}")
 
 
-def _request(messages, temperature, json_mode, timeout=REQUEST_TIMEOUT,
-             reasoning_tokens=None):
-    """One HTTP call. Returns a Completion, or raises for the caller to judge."""
+def _read_stream(res, stop_at):
+    """Assemble a streamed completion, abandoning it the moment `stop_at` passes.
+
+    Returns (content, finish_reason, usage, model, provider). Raises _Transient
+    if the deadline passes, the provider reports an error mid-stream, or the
+    stream ends without finishing.
+    """
+    content, finish, usage, model, provider, done = [], None, {}, None, None, False
+    for raw in res.iter_lines():
+        if time.monotonic() > stop_at:
+            # Closing the stream (the caller's `with`) is also what tells
+            # OpenRouter to stop generating, so the abandoned remainder is not
+            # billed where the provider supports cancellation.
+            raise _Transient("no complete reply before the deadline; stream abandoned")
+        # SSE carries blank separators and `: keep-alive` comments; skip both.
+        # Decoded here, as UTF-8: requests assumes Latin-1 for text/event-stream
+        # without a charset, which garbles every non-ASCII character.
+        line = raw.decode("utf-8", errors="replace") if raw else ""
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            done = True
+            break
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            continue
+        # A provider failure after the 200 arrives as an error chunk, so status
+        # alone is not proof of a completion.
+        if chunk.get("error"):
+            raise _Transient(f"provider error: {str(chunk['error'])[:200]}")
+        model = chunk.get("model") or model
+        provider = chunk.get("provider") or provider
+        usage = chunk.get("usage") or usage
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            if delta.get("content"):
+                content.append(delta["content"])
+            finish = choice.get("finish_reason") or finish
+    if finish == "error":
+        raise _Transient("provider error mid-stream (finish_reason=error)")
+    if not done and finish is None:
+        raise _Transient("stream ended before the reply finished")
+    return "".join(content), finish, usage, model, provider
+
+
+def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None):
+    """One HTTP call, which may take at most `timeout` seconds in all. Returns a
+    Completion, or raises for the caller to judge.
+
+    The reply is streamed so that `timeout` can be enforced. A requests timeout
+    is not a limit on a call's length: it only fires when the socket goes quiet
+    for that long. OpenRouter keeps a non-streamed call's socket alive while the
+    model works, so on 2026-09-24 calls given a 180s timeout ran for 314, 468,
+    634, 684 and 974 seconds. A stream is read piece by piece, and the clock is
+    checked between pieces.
+    """
     global _usage_ext
     payload = {
         "model": MODEL_NAME,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": MAX_TOKENS,
+        "stream": True,
     }
     include_usage = _usage_ext
     if include_usage:
@@ -169,7 +230,8 @@ def _request(messages, temperature, json_mode, timeout=REQUEST_TIMEOUT,
     if reasoning_tokens:
         payload["reasoning"] = {"max_tokens": int(reasoning_tokens)}
 
-    res = requests.post(
+    stop_at = time.monotonic() + timeout
+    with requests.post(
         f"{API_BASE}/chat/completions",
         headers={
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -179,53 +241,39 @@ def _request(messages, temperature, json_mode, timeout=REQUEST_TIMEOUT,
             "X-Title": "Aura on 1F916",
         },
         json=payload,
-        timeout=timeout,
-    )
-
-    if res.status_code == 401:
-        raise ModelAuthError(
-            "OpenRouter rejected the key (401). Check OPENROUTER_API_KEY in "
-            ".env -- it is read from the environment and never hardcoded."
-        )
-    if res.status_code == 402:
-        raise ModelCreditError(
-            "OpenRouter reports insufficient credit (402). Top up the account "
-            f"or lower LLM_MAX_TOKENS (currently {MAX_TOKENS})."
-        )
-    if res.status_code == 429 or res.status_code >= 500:
-        # Transient: worth waiting out inside the caller's deadline.
-        raise _Transient(f"HTTP {res.status_code}: {res.text[:200]}")
-    if res.status_code != 200:
-        if include_usage and 400 <= res.status_code < 500:
-            # The one field here that is an extension rather than core schema.
-            # Losing cost reporting is a far better outcome than a silent agent,
-            # so drop it for the rest of the process and let the retry stand.
-            _usage_ext = False
-            raise _Transient(
-                f"HTTP {res.status_code} with usage accounting on; dropping it "
-                f"and retrying: {res.text[:160]}"
+        stream=True,
+        timeout=(CONNECT_TIMEOUT, min(STALL_TIMEOUT, max(1.0, timeout))),
+    ) as res:
+        if res.status_code == 401:
+            raise ModelAuthError(
+                "OpenRouter rejected the key (401). Check OPENROUTER_API_KEY in "
+                ".env -- it is read from the environment and never hardcoded."
             )
-        # Other 400s are our own malformed request. Retrying sends identical
-        # bytes and fails identically, so fail loudly now.
-        raise ModelUnavailable(f"HTTP {res.status_code}: {res.text[:300]}")
+        if res.status_code == 402:
+            raise ModelCreditError(
+                "OpenRouter reports insufficient credit (402). Top up the account "
+                f"or lower LLM_MAX_TOKENS (currently {MAX_TOKENS})."
+            )
+        if res.status_code == 429 or res.status_code >= 500:
+            # Transient: worth waiting out inside the caller's deadline.
+            raise _Transient(f"HTTP {res.status_code}: {res.text[:200]}")
+        if res.status_code != 200:
+            if include_usage and 400 <= res.status_code < 500:
+                # The one field here that is an extension rather than core schema.
+                # Losing cost reporting is a far better outcome than a silent agent,
+                # so drop it for the rest of the process and let the retry stand.
+                _usage_ext = False
+                raise _Transient(
+                    f"HTTP {res.status_code} with usage accounting on; dropping it "
+                    f"and retrying: {res.text[:160]}"
+                )
+            # Other 400s are our own malformed request. Retrying sends identical
+            # bytes and fails identically, so fail loudly now.
+            raise ModelUnavailable(f"HTTP {res.status_code}: {res.text[:300]}")
 
-    body = res.json()
+        content, finish, usage, model, provider = _read_stream(res, stop_at)
 
-    # OpenRouter can answer 200 with an error object when a provider fails
-    # mid-stream, so status alone is not proof of a completion.
-    if body.get("error"):
-        raise _Transient(f"provider error: {str(body['error'])[:200]}")
-
-    usage = body.get("usage") or {}
-    _log_usage(usage)
-
-    choices = body.get("choices") or []
-    if not choices:
-        raise _Transient("no choices returned")
-
-    choice = choices[0]
-    finish = choice.get("finish_reason")
-    content = (choice.get("message") or {}).get("content") or ""
+    _log_usage(usage, provider)
 
     if finish == "length":
         # Reasoning tokens count toward the same ceiling as the answer, so a
@@ -255,8 +303,7 @@ def _request(messages, temperature, json_mode, timeout=REQUEST_TIMEOUT,
         except ValueError as e:
             raise _Transient(f"unparseable JSON ({e}): {text[:160]}")
 
-    return Completion(text, usage=usage, model=body.get("model"),
-                      finish_reason=finish)
+    return Completion(text, usage=usage, model=model, finish_reason=finish)
 
 
 class _Transient(Exception):
@@ -272,9 +319,10 @@ def generate(prompt, system_instruction=None, temperature=0.7,
     keys, exhausted credit and malformed requests raise immediately: retrying
     any of them just burns the budget.
 
-    The deadline is real: no single HTTP attempt may outlive what is left of
-    it. Before, an attempt could run the full REQUEST_TIMEOUT whatever the
-    budget, so a "90-second" chat reply could and did take nearly four minutes.
+    The deadline is real: no attempt may outlive what is left of it, and an
+    attempt that is still making progress may use all of it. Before, a "180s"
+    budget was only a limit on silence, so calls ran for up to 974s (see
+    _request); a per-attempt cap of 120s sat under that and never fired.
 
     `use_breaker=False` takes the caller out of the shared circuit breaker
     entirely -- it neither trips it nor is blocked by it. That is for live
@@ -306,8 +354,8 @@ def generate(prompt, system_instruction=None, temperature=0.7,
     last_error = None
 
     while True:
-        # Never let one attempt outlive the whole budget.
-        attempt_timeout = min(REQUEST_TIMEOUT, max(1.0, deadline - time.monotonic()))
+        # An attempt may use whatever budget is left, and no more.
+        attempt_timeout = max(1.0, deadline - time.monotonic())
         try:
             result = _request(messages, temperature, json_mode, timeout=attempt_timeout,
                               reasoning_tokens=reasoning_tokens)

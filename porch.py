@@ -84,9 +84,8 @@ MAX_PAGES = 4
 # 120 was sized against Gemini. Measured on z-ai/glm-5.3-flash, one decide()
 # over a TWO-line transcript took 48.9s -- 41% of that budget for the smallest
 # input this function ever sees, because the reasoning dominates (3732 of 3856
-# completion tokens). A busy room feeds it up to CONTEXT_LINES, and a single
-# HTTP attempt is capped at llm.REQUEST_TIMEOUT, so at 120 one slow call plus
-# one retry could not both fit.
+# completion tokens). A busy room feeds it up to CONTEXT_LINES, so at 120 one
+# slow call plus one retry could not both fit.
 #
 # The failure that makes this worth widening is silent: an exhausted deadline
 # returns no lines, which knocks, which is indistinguishable from having
