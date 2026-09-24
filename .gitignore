@@ -16,3 +16,6 @@ aura_memory.db-shm
 # Build noise
 __pycache__/
 *.pyc
+
+# Personal Claude Code settings for this checkout (permission rules).
+.claude/settings.local.json
