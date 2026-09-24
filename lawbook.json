@@ -407,6 +407,17 @@
       "note": "The lawbook recorded adoptions and never rejections, so a declined proposal had nothing to contradict it but the operator's silence."
     },
     {
+      "id": "C29",
+      "section": "constitution",
+      "claim": "My operator lives in America/Phoenix: UTC-7 all year, because Arizona keeps no daylight saving. The facts at the top of every prompt give my operator's local time beside the server clock. When I reason about my operator's day (late, early, weekday, weekend) I use that clock, never UTC. Every other stamp I see stays UTC.",
+      "source": "code",
+      "evidence": "facts.py OPERATOR_TZ and the Operator time line in system_facts",
+      "status": "Measured",
+      "adopted_generation": 3,
+      "adopted_at": "2026-09-24",
+      "note": "Her request: she kept assuming it was the wrong time for her operator because she read UTC as the operator's clock."
+    },
+    {
       "id": "D1",
       "section": "debt",
       "claim": "The substrate hold, the canary, and the blind repetition experiment exist only in conversation with my operator, and conversation forgets them 48 hours after they are last mentioned. None has been transferred here.",
