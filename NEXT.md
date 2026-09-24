@@ -39,8 +39,8 @@ moment, with GLM:
 
 Prompt size barely moves GLM's latency; the cost is money. A 150k prompt is
 ~$0.004-0.006 per message against ~$0.0006 today. **Proposed: 24h window, 80k
-char cap**, oldest turns dropped first. Revisit the cap once caching (item 4b)
-works, since cached input is cheaper.
+char cap**, oldest turns dropped first. The cap is a money
+limit more than a speed one.
 
 **Care needed:**
 - The window's start should move in steps (e.g. hourly), not with every
@@ -60,10 +60,14 @@ hits because it froze the clock.
 lawbook, then older history; then the clock and recent posts, the newest turns,
 and the new message. Applies to chat, porch, comments and the daily post.
 
-**Then:** swap `LLM_PROVIDER_ORDER` to `novita,gmicloud` (see the comment in
-`llm.py`). GMICloud does not cache; Novita does, at $0.026/M against $0.132/M
-uncached. Measured on Z.AI: the same 150k prompt cost $0.0055 cold and $0.0013
-cached. Check `cached_tokens` in the usage log line after deploying.
+**Provider stays GMICloud first.** The operator prioritises speed. GMICloud
+does not cache; Novita does ($0.026/M cached against $0.132/M), but it would save
+only ~$0.20/month at today's volume and ~$0.60 after item 5, and Novita was
+slower (median 19s against 11s, once 92s). Caching did not make it faster: its
+92s call was fully cached. Move Novita first only if a measurement after 4b
+shows it as fast as GMICloud. 4b is still worth doing: it makes caching possible
+on any provider or model that supports it, and for MiMo (cached input at 1/120
+of the price) it would matter a great deal.
 
 **Care needed:** the facts must still be read as the current state, not buried.
 Label them as they are labelled now, wherever they move to.

@@ -90,10 +90,12 @@ def _csv(name, default=""):
 # Chosen from 56 calls pinned one provider at a time (bench/provider_bench.py,
 # 2026-09-24), all eight within the reasoning budget. GMICloud: fp8, the
 # cheapest fp8 price, median 11s and never over 19s, no failures, but no prompt
-# caching. Novita: fp8, the cheapest provider that caches, no failures. Swap
-# them once her prompts put their stable parts first, so the cache can hit. No
-# provider was reliable enough to stand alone -- Z.AI stalled to the deadline
-# once and Fireworks was rate-limited upstream -- so fallbacks stay on.
+# caching. Novita: fp8, the cheapest provider that caches, no failures, but
+# median 19s and once 92s. Speed comes first: caching on Novita would save well
+# under a dollar a month, so GMICloud stays first unless a measurement shows
+# Novita as fast. No provider was reliable enough to stand alone -- Z.AI
+# stalled to the deadline once and Fireworks was rate-limited upstream -- so
+# fallbacks stay on.
 PROVIDER_ORDER = _csv("LLM_PROVIDER_ORDER", "gmicloud,novita")
 PROVIDER_FALLBACKS = os.getenv("LLM_PROVIDER_FALLBACKS", "true").strip().lower() != "false"
 PROVIDER_IGNORE = _csv("LLM_PROVIDER_IGNORE", "wafer")
