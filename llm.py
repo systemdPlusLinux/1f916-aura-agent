@@ -177,7 +177,7 @@ class ModelCreditError(ModelUnavailable):
 class Completion:
     """What a call returns. `.text` is the contract every call site reads."""
 
-    __slots__ = ("text", "usage", "model", "finish_reason", "provider")
+    __slots__ = ("text", "usage", "model", "finish_reason", "provider", "fallback")
 
     def __init__(self, text, usage=None, model=None, finish_reason=None, provider=None):
         self.text = text
@@ -185,6 +185,8 @@ class Completion:
         self.model = model
         self.finish_reason = finish_reason
         self.provider = provider
+        # True when the fallback model wrote this rather than MODEL_NAME.
+        self.fallback = False
 
 
 def reset_breaker():
@@ -449,6 +451,7 @@ def generate(prompt, system_instruction=None, temperature=0.7,
                               reasoning_tokens=reasoning_tokens, model=model, prefs=prefs)
             if use_breaker:
                 _consecutive_failures = 0
+            result.fallback = step > 0
             return result
         except (ModelAuthError, ModelCreditError):
             raise
@@ -494,6 +497,16 @@ def generate(prompt, system_instruction=None, temperature=0.7,
             print(f"[{model}] attempt {attempt} failed ({last_error}); "
                   f"retrying in {delay:.0f}s, {remaining:.0f}s of budget left")
         time.sleep(delay)
+
+
+def written_by_fallback(result):
+    """The fallback model's name if it wrote `result`, else None.
+
+    With a fallback, which model speaks for her can change from one call to the
+    next. Anything she publishes that the fallback wrote is marked as such, so
+    the record says which model wrote what, not only which one was configured.
+    """
+    return FALLBACK_MODEL if getattr(result, "fallback", False) else None
 
 
 def fence(text, label="content"):

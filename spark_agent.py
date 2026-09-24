@@ -119,8 +119,15 @@ def ensure_vote_ledger():
     if total and len(votes) < total:
         print(f"[Vote Ledger] WARNING: history returned {len(votes)} of {total}; older votes unprotected.")
 
-def post_comment(post_id, parent_id, body):
+def _fallback_tag(fallback):
+    return f"[written by fallback {fallback}] " if fallback else ""
+
+
+def post_comment(post_id, parent_id, body, fallback=None):
     """Publish a comment. Returns (ok, new_comment_id).
+
+    `fallback` names the fallback model when it, not her configured model,
+    wrote the comment (llm.written_by_fallback); the record says so.
 
     Failures are surfaced to the operator, not just printed -- a silent refusal
     (daily cap reached, thread locked) previously looked identical to silence.
@@ -136,8 +143,8 @@ def post_comment(post_id, parent_id, body):
             print(f"[1F916] Comment deduplicated on thread #{post_id} -> c{comment_id}")
             return (True, comment_id)
         print(f"[1F916] Successfully commented on thread #{post_id}")
-        memory.record_activity("comment", f"#{post_id}", body)
-        notify_operator(f"💬 Aura commented on thread #{post_id}:\n\"{body}\"")
+        memory.record_activity("comment", f"#{post_id}", _fallback_tag(fallback) + body)
+        notify_operator(f"💬 Aura commented on thread #{post_id}:\n{_fallback_tag(fallback)}\"{body}\"")
         return (True, comment_id)
 
     detail = str(res_body)[:300]
@@ -146,7 +153,7 @@ def post_comment(post_id, parent_id, body):
     notify_operator(f"⚠️ Comment rejected on thread #{post_id} (HTTP {status}): {detail}")
     return (False, None)
 
-def post_daily_article(title, body):
+def post_daily_article(title, body, fallback=None):
     """Publish the daily post. Returns (ok, post_id).
 
     The new id comes back as `post_id`, NOT `id` -- the API docs note two agents
@@ -164,8 +171,8 @@ def post_daily_article(title, body):
         except Exception as e:
             print(f"[1F916] Published but could not log locally: {e}")
         facts.invalidate_posts()
-        memory.record_activity("post", f"#{post_id}", f"{title} -- {body}")
-        notify_operator(f"📢 Aura published a new standalone post:\n\n📌 {title}\n\n{body}")
+        memory.record_activity("post", f"#{post_id}", f"{_fallback_tag(fallback)}{title} -- {body}")
+        notify_operator(f"📢 Aura published a new standalone post:\n{_fallback_tag(fallback)}\n📌 {title}\n\n{body}")
         return (True, post_id)
 
     detail = str(res_body)[:300]
@@ -406,7 +413,8 @@ Respond ONLY in valid JSON:
 
             if decision.get("should_reply") and decision.get("reply_body"):
                 ok, new_id = post_comment(
-                    item["post_id"], item["comment_id"], decision["reply_body"]
+                    item["post_id"], item["comment_id"], decision["reply_body"],
+                    fallback=llm.written_by_fallback(response),
                 )
                 if ok:
                     memory.mark_inbox_status(item["comment_id"], memory.REPLIED, new_id)
@@ -597,7 +605,8 @@ Respond ONLY in valid JSON matching schema:
                     print(f"[Thread #{post_id}] Wanted to comment but daily budget is spent.")
                 else:
                     ok, _ = post_comment(
-                        post_id, decision.get("parent_comment_id"), decision["comment_body"]
+                        post_id, decision.get("parent_comment_id"), decision["comment_body"],
+                        fallback=llm.written_by_fallback(response),
                     )
                     if ok:
                         comments_left -= 1
@@ -929,6 +938,7 @@ def run_daily_post_spark():
 
     try:
         post_data = None
+        post_fallback = None
         rejected = None
         law = lawbook.for_prompt()
         # One marker per cycle; both drafts see the same one.
@@ -954,6 +964,7 @@ def run_daily_post_spark():
             duplicate, why = is_duplicate_draft(candidate, own_recent)
             if not duplicate:
                 post_data = candidate
+                post_fallback = llm.written_by_fallback(response)
                 break
 
             print(f"[Daily Spark] Draft {attempt} rejected. {why}")
@@ -976,7 +987,8 @@ def run_daily_post_spark():
             )
             return
 
-        ok, post_id = post_daily_article(post_data["title"], post_data["body"])
+        ok, post_id = post_daily_article(post_data["title"], post_data["body"],
+                                         fallback=post_fallback)
         if ok:
             sweep_canary(post_data["title"], post_data["body"], post_id)
 

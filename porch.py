@@ -237,8 +237,9 @@ def knock():
     return ok
 
 
-def say(body):
-    """Say one line. Returns the new line id, or None."""
+def say(body, fallback=None):
+    """Say one line. Returns the new line id, or None. `fallback` names the
+    fallback model if it, not her configured model, wrote the line."""
     body = (body or "").strip()
     if not (1 <= len(body) <= LINE_MAX):
         print(f"[Porch] Refusing to send a {len(body)}-char line; the cap is {LINE_MAX}.")
@@ -252,7 +253,8 @@ def say(body):
     remember_said(body)
     record_line_said()
     line_id = res.get("line_id") or res.get("id") if isinstance(res, dict) else None
-    memory.record_activity("porch", f"porch:{line_id}" if line_id else "", body)
+    tag = f"[written by fallback {fallback}] " if fallback else ""
+    memory.record_activity("porch", f"porch:{line_id}" if line_id else "", tag + body)
     print(f"[Porch] Said (porch:{line_id}): {body[:120]}")
     return line_id
 
@@ -338,7 +340,7 @@ Respond ONLY in valid JSON:
         decision = json.loads(response.text)
     except Exception as e:
         print(f"[Porch] No decision this visit: {e}")
-        return ([], "")
+        return ([], "", None)
 
     why = decision.get("why") or ""
     print(f"[Porch] {why}")
@@ -355,7 +357,7 @@ Respond ONLY in valid JSON:
             print("[Porch] Dropping a line she already said.")
             continue
         out.append(line)
-    return (out, why)
+    return (out, why, llm.written_by_fallback(response))
 
 
 def run_porch_visit():
@@ -383,7 +385,7 @@ def run_porch_visit():
             knock()
             return
 
-        to_say, why = decide(lines, presence)
+        to_say, why, fallback = decide(lines, presence)
         if not to_say:
             knock()
             return
@@ -396,7 +398,7 @@ def run_porch_visit():
                 # The registry paces lines; pausing here is cheaper than being
                 # refused and losing the second half of a thought.
                 time.sleep(PACE_SECONDS)
-            if say(line):
+            if say(line, fallback=fallback):
                 said.append(line)
 
         # One alert per visit that produced speech, never per line and never
