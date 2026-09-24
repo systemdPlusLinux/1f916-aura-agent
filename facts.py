@@ -37,6 +37,12 @@ POSTS_TTL = 30 * 60
 CLOCK_TTL = 10 * 60
 POSTS_SHOWN = 8
 
+# Her operator's wall clock. Given only UTC, she kept reasoning about the operator's
+# day as if it ran on UTC. Phoenix has kept UTC-7 all year since 1968, so a fixed
+# offset is exact and does not depend on the slim image carrying tz data.
+OPERATOR_TZ_NAME = "America/Phoenix"
+OPERATOR_TZ = datetime.timezone(datetime.timedelta(hours=-7), "MST")
+
 _REPO = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -76,6 +82,11 @@ _cache = {"offset": None, "offset_at": 0.0, "posts": None, "posts_at": 0.0}
 def _fmt(epoch_seconds, seconds=False):
     dt = datetime.datetime.fromtimestamp(epoch_seconds, datetime.UTC)
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC" if seconds else "%Y-%m-%d %H:%M UTC")
+
+
+def _fmt_operator(epoch_seconds):
+    dt = datetime.datetime.fromtimestamp(epoch_seconds, OPERATOR_TZ)
+    return dt.strftime("%Y-%m-%d %H:%M MST (%a %-I:%M %p)")
 
 
 def _learn_offset(payload):
@@ -178,6 +189,8 @@ def system_facts(include_posts=True):
         "assembled, read from the 1F916 server. Not memory, not conversation.",
         "",
         f"Current time: {_fmt(t, seconds=True)} ({source})",
+        f"Operator time: {_fmt_operator(t)} -- your operator's clock, {OPERATOR_TZ_NAME},",
+        "               UTC-7 all year (no daylight saving). Every other stamp stays UTC.",
         f"Generation:   {lawbook.current_generation()}",
     ] + _settings_lines()
     if include_posts:
