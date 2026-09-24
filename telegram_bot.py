@@ -30,9 +30,14 @@ CHAT_REASONING_TOKENS = int(os.getenv("CHAT_REASONING_TOKENS", "4000"))
 # silently run to 120s, and when a reasoning runaway could not end on its own.
 CHAT_DEADLINE = int(os.getenv("CHAT_DEADLINE", "180"))
 
-# How many conversation turns chat shows her. Named, not inlined, so the facts
-# block can report the value actually in effect.
-CHAT_TURNS = 8
+# How much conversation chat shows her: the last CHAT_HOURS, never fewer than
+# the newest CHAT_MIN_TURNS, oldest dropped first past CHAT_MAX_CHARS. Named,
+# not inlined, so the facts block can report the values actually in effect.
+# Measured 2026-09-24 (bench/latency_bench.py): on Muse Spark, a 150k-char
+# window answered as fast as 8 turns (median 10.2s against 7.1s).
+CHAT_HOURS = 48
+CHAT_MAX_CHARS = 150_000
+CHAT_MIN_TURNS = 8
 
 try:
     OPERATOR_ID = int(OPERATOR_ID_RAW)
@@ -202,7 +207,8 @@ def handle_chat(user_message, chat_id):
     """
     # The conversation as the operator sees it: his messages, her replies, and
     # what she did on the board in between, interleaved in time order.
-    recent_context = memory.get_chat_timeline(limit=CHAT_TURNS)
+    recent_context = memory.get_chat_timeline(
+        max_age_hours=CHAT_HOURS, max_chars=CHAT_MAX_CHARS, min_turns=CHAT_MIN_TURNS)
     # Chat is where she is asked about herself, and where she once said she
     # was almost certainly a Claude-class model while running on GLM. The law
     # is here so that answer has something truer to stand on than introspection.

@@ -294,21 +294,46 @@ def _activity_line(ts, kind, ref, text):
 HANDLE_LABEL = os.getenv("ONEF916_HANDLE", "Aura")
 
 
-def get_chat_timeline(limit: int = 8) -> str:
+def get_chat_timeline(max_age_hours: float = 48, max_chars: int = 150_000,
+                      min_turns: int = 8) -> str:
     """The conversation as the operator sees it in Telegram: his messages, her
     replies, and what she did on the board in the same stretch of time,
     interleaved in time order, every line stamped.
 
-    The conversation is still its newest `limit` turns. Board activity is taken
-    from the moment the oldest of those turns was said, so the two cover the
-    same span and nothing appears out of context. Actions are summarised to
-    ACTIVITY_CHARS and capped at the newest ACTIVITY_LIMIT, so a busy spark
-    cannot crowd the conversation out.
+    The conversation is every turn from the last `max_age_hours`, and never
+    fewer than the newest `min_turns` however old, with the oldest dropped
+    first once the lines exceed `max_chars`. It used to be the newest 8 turns
+    alone; her replies average ~2,500 characters, so that reached back anywhere
+    from 16 minutes to 14 hours. The floor keeps a quiet spell from leaving her
+    with no history at all, which a pure time window would do.
+
+    Board activity is taken from the moment the oldest kept turn was said, so
+    the two cover the same span and nothing appears out of context. Actions are
+    summarised to ACTIVITY_CHARS and capped at the newest ACTIVITY_LIMIT, so a
+    busy spark cannot crowd the conversation out.
     """
+    cutoff = int(time.time() - max_age_hours * 3600)
     with sqlite3.connect(DB_PATH) as conn:
-        turns = conn.execute(
+        rows = conn.execute(
             "SELECT timestamp, speaker, message FROM operator_dialogue "
-            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            "ORDER BY id DESC LIMIT ?", (DIALOGUE_ROW_CEILING,)).fetchall()
+        # Newest first. Keep the floor whatever its age, then everything in
+        # the window, until the character budget runs out.
+        turns, spent = [], 0
+        for i, (t, s, m) in enumerate(rows):
+            if i >= min_turns and t < cutoff:
+                break
+            line = f"[{_stamp(t)}] {s}: {m}"
+            if turns and spent + len(line) + 1 > max_chars:
+                break
+            if not turns and len(line) + 1 > max_chars:
+                # One turn larger than the whole budget: keep its tail, the
+                # part nearest the present, as get_recent_dialogue does.
+                room = max(0, max_chars - len(f"[{_stamp(t)}] {s}: ") - 4)
+                m = "..." + m[-room:] if room else ""
+                line = f"[{_stamp(t)}] {s}: {m}"
+            turns.append((t, s, m))
+            spent += len(line) + 1
         since = min(t for t, _, _ in turns) if turns else int(time.time()) - 86400
         acts = conn.execute(
             "SELECT timestamp, kind, ref, text FROM activity_log WHERE timestamp >= ? "

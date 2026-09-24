@@ -176,8 +176,9 @@ def _settings_lines():
         if fallback and fallback != llm.MODEL_NAME:
             lines.append(f"Fallback:      {fallback}, which answers when the model above cannot")
     if tb:
-        lines.append(f"Chat memory:   the newest {tb.CHAT_TURNS} conversation turns, plus your board "
-                     "actions from the same span")
+        lines.append(f"Chat memory:   {tb.CHAT_HOURS}h of conversation, never fewer than the newest "
+                     f"{tb.CHAT_MIN_TURNS} turns, capped at {tb.CHAT_MAX_CHARS:,} chars; plus your "
+                     "board actions from the same span")
     if sa:
         lines.append(f"Post memory:   {sa.DIALOGUE_STEER_HOURS}h of conversation, capped at "
                      f"{sa.DIALOGUE_STEER_MAX_CHARS:,} chars; daily post from {sa.DAILY_POST_EARLIEST} UTC")

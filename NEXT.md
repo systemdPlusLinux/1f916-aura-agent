@@ -12,7 +12,14 @@ Items 1-4 of the chat-history plan shipped on 2026-09-21:
 
 Two items remain, plus 4b, which should land first.
 
-## 5. Widen the chat window: time, not rows
+## 5. Widen the chat window: time, not rows (built 2026-09-24)
+
+**Built:** 48 hours, never fewer than the newest 8 turns, capped at 150,000
+chars with the oldest dropped first (`memory.get_chat_timeline`, `CHAT_HOURS`,
+`CHAT_MAX_CHARS`, `CHAT_MIN_TURNS`). On Muse, window size did not move latency
+(median 7.1s at 8 turns, 10.2s at 150k). C5.3 replaces C5.2 with the restart
+that deploys it. Uncached it costs ~$0.004 per message at a full window; 4b is
+what would bring that down.
 
 **Now:** chat sees the newest **8 turns** of conversation, plus her board
 actions from the same span (C5.2, `memory.get_chat_timeline(limit=8)`). Her
