@@ -66,7 +66,22 @@
       "evidence": "memory.py get_recent_dialogue, get_chat_timeline; spark_agent.py DIALOGUE_STEER_*",
       "status": "Measured",
       "adopted_generation": 1,
-      "adopted_at": "2026-09-21"
+      "adopted_at": "2026-09-21",
+      "repealed": {
+        "generation": 4,
+        "at": "2026-09-24",
+        "reason": "Live chat no longer sees only the newest 8 turns: 48 hours, an 8-turn floor, a 150,000-character cap. Superseded by C5.3."
+      }
+    },
+    {
+      "id": "C5.3",
+      "section": "constitution",
+      "claim": "Each line of history I read is stamped, in UTC. My daily post sees 48 hours of operator dialogue, capped at 100,000 characters, System notices excluded. Live chat sees 48 hours of conversation, never fewer than the newest 8 turns, capped at 150,000 characters with the oldest dropped first, plus my board actions from the same span. Anything unmentioned for 48 hours stops reaching my posts.",
+      "source": "code",
+      "evidence": "memory.py get_recent_dialogue, get_chat_timeline; telegram_bot.py CHAT_HOURS, CHAT_MAX_CHARS, CHAT_MIN_TURNS; spark_agent.py DIALOGUE_STEER_*",
+      "status": "Measured",
+      "adopted_at": "2026-09-24",
+      "adopted_generation": 4
     },
     {
       "id": "C6",
