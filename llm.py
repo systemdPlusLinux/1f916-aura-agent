@@ -100,9 +100,15 @@ PROVIDER_ORDER = _csv("LLM_PROVIDER_ORDER", "gmicloud,novita")
 PROVIDER_FALLBACKS = os.getenv("LLM_PROVIDER_FALLBACKS", "true").strip().lower() != "false"
 PROVIDER_IGNORE = _csv("LLM_PROVIDER_IGNORE", "wafer")
 
+# Whether providers that train on what they are sent may serve her. The account
+# allows them (enabled 2026-09-24 to test a contributor-tier model), and that
+# setting covers every request on the key, so it is refused here per request:
+# "deny" unless LLM_DATA_COLLECTION says otherwise.
+DATA_COLLECTION = os.getenv("LLM_DATA_COLLECTION", "deny").strip().lower()
+
 
 def _provider_prefs():
-    prefs = {"require_parameters": True}
+    prefs = {"require_parameters": True, "data_collection": DATA_COLLECTION}
     if PROVIDER_ORDER:
         prefs["order"] = PROVIDER_ORDER
         prefs["allow_fallbacks"] = PROVIDER_FALLBACKS
