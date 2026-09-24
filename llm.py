@@ -71,6 +71,43 @@ REASONING_MAX_TOKENS = int(os.getenv("LLM_REASONING_MAX_TOKENS", "12000"))
 STALL_TIMEOUT = int(os.getenv("LLM_STALL_TIMEOUT", "60"))
 CONNECT_TIMEOUT = 10
 
+
+def _csv(name, default=""):
+    return [p.strip() for p in os.getenv(name, default).split(",") if p.strip()]
+
+
+# Which OpenRouter providers may serve her. Left to itself, OpenRouter spread
+# 12 GLM calls over 9 providers: every prompt cache started cold, and one
+# provider (Wafer) ignored the reasoning budget both times it was picked,
+# reasoning 15k and 23k tokens for 5 and 8 minutes. The same model is not the
+# same service everywhere.
+#
+# PROVIDER_ORDER is tried first, in order; with fallbacks on, any other
+# provider may still answer if all of those fail, except those in
+# PROVIDER_IGNORE. require_parameters keeps out providers that would silently
+# drop the reasoning budget or JSON mode rather than honour them.
+#
+# Chosen from 56 calls pinned one provider at a time (bench/provider_bench.py,
+# 2026-09-24), all eight within the reasoning budget. GMICloud: fp8, the
+# cheapest fp8 price, median 11s and never over 19s, no failures, but no prompt
+# caching. Novita: fp8, the cheapest provider that caches, no failures. Swap
+# them once her prompts put their stable parts first, so the cache can hit. No
+# provider was reliable enough to stand alone -- Z.AI stalled to the deadline
+# once and Fireworks was rate-limited upstream -- so fallbacks stay on.
+PROVIDER_ORDER = _csv("LLM_PROVIDER_ORDER", "gmicloud,novita")
+PROVIDER_FALLBACKS = os.getenv("LLM_PROVIDER_FALLBACKS", "true").strip().lower() != "false"
+PROVIDER_IGNORE = _csv("LLM_PROVIDER_IGNORE", "wafer")
+
+
+def _provider_prefs():
+    prefs = {"require_parameters": True}
+    if PROVIDER_ORDER:
+        prefs["order"] = PROVIDER_ORDER
+        prefs["allow_fallbacks"] = PROVIDER_FALLBACKS
+    if PROVIDER_IGNORE:
+        prefs["ignore"] = PROVIDER_IGNORE
+    return prefs
+
 # Backoff schedule; the last value repeats until the deadline is reached.
 DELAYS = [4, 8, 16, 32, 64]
 
@@ -108,13 +145,14 @@ class ModelCreditError(ModelUnavailable):
 class Completion:
     """What a call returns. `.text` is the contract every call site reads."""
 
-    __slots__ = ("text", "usage", "model", "finish_reason")
+    __slots__ = ("text", "usage", "model", "finish_reason", "provider")
 
-    def __init__(self, text, usage=None, model=None, finish_reason=None):
+    def __init__(self, text, usage=None, model=None, finish_reason=None, provider=None):
         self.text = text
         self.usage = usage or {}
         self.model = model
         self.finish_reason = finish_reason
+        self.provider = provider
 
 
 def reset_breaker():
@@ -221,6 +259,7 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None):
         "temperature": temperature,
         "max_tokens": MAX_TOKENS,
         "stream": True,
+        "provider": _provider_prefs(),
     }
     include_usage = _usage_ext
     if include_usage:
@@ -303,7 +342,8 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None):
         except ValueError as e:
             raise _Transient(f"unparseable JSON ({e}): {text[:160]}")
 
-    return Completion(text, usage=usage, model=model, finish_reason=finish)
+    return Completion(text, usage=usage, model=model, finish_reason=finish,
+                      provider=provider)
 
 
 class _Transient(Exception):
