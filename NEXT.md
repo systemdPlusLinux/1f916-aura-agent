@@ -76,7 +76,16 @@ The OpenRouter account and the 1f916 workspace guardrail now allow training
 providers; `data_collection: deny` on every other request is what keeps them
 out, so it must stay the default.
 
-## 4b. Cacheable prompt order (do before item 5)
+## 4b. Cacheable prompt order (on hold: her model does not cache)
+
+**Measured 2026-09-24, on hold since:** Muse Spark 1.3 contributor lists
+cached input at $0.002/M against $0.10/M, but five calls through Meta on a
+real 7,411-token chat prompt cached nothing: a cold call, an identical repeat,
+one with only the clock changed, and two with an explicit `cache_control`
+marker (0 cached, 0 written). Reordering would buy neither speed nor money
+until that changes; at ~$0.02/day of prompt tokens, perfect caching saves under
+$1/month. The usage log line now prints `cached=`; when it shows a non-zero
+value on Muse, this item is worth doing. What follows is the plan for then.
 
 Every prompt that speaks for her opens with the facts block, whose first line
 is the clock to the second. A provider's cache matches only an unchanged

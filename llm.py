@@ -223,6 +223,12 @@ def _log_usage(usage, provider=None, model=None):
     details = usage.get("completion_tokens_details") or {}
     reasoning = details.get("reasoning_tokens")
     extra = f", reasoning={reasoning}" if reasoning else ""
+    # Printed even when zero: Muse Spark contributor lists a cache price but
+    # cached nothing in five measured calls (2026-09-24), explicit markers
+    # included. This line is how anyone would notice it start.
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    if cached is not None:
+        extra += f", cached={cached}"
     cost = usage.get("cost")
     money = f", cost=${cost:.6f}" if isinstance(cost, (int, float)) else ""
     print(f"[{model}]{via} tokens: prompt={prompt}, completion={completion}, "
