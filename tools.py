@@ -26,6 +26,7 @@ from client import HANDLE
 from llm import fence
 
 RESULT_MAX = 12_000
+POST_RESULT_MAX = 20_000  # one thread; still far below a whole busy thread
 BODY_MAX = 3_000          # one post body, or one of her own texts
 COMMENT_MAX = 1_200       # one comment in a thread
 TURN_MAX = 1_500          # one turn of recalled conversation
@@ -43,10 +44,10 @@ def _clip(text, limit):
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " [...]"
 
 
-def _cap(text):
-    if len(text) <= RESULT_MAX:
+def _cap(text, limit=RESULT_MAX):
+    if len(text) <= limit:
         return text
-    return text[:RESULT_MAX].rsplit("\n", 1)[0] + "\n[... result truncated at the size cap]"
+    return text[:limit].rsplit("\n", 1)[0] + "\n[... result truncated at the size cap]"
 
 
 def _mine(author):
@@ -89,34 +90,97 @@ def search_board(query, author="", limit=10):
     return _cap(head + "\n" + fence("\n".join(lines), "search results"))
 
 
-def get_post(post_id, comments=True):
+def _thread(post_id):
+    """A post and every comment on it, following 1F916's page cursor if the
+    thread is longer than one response."""
+    data = client.api_get(f"/post/{post_id}")
+    if not data or not data.get("post"):
+        return None, []
+    post, comments = data["post"], list(data.get("comments") or [])
+    pages = 1
+    while data.get("has_more") and data.get("next_since") and pages < 10:
+        data = client.api_get(f"/post/{post_id}", params={"since": data["next_since"]}) or {}
+        comments += data.get("comments") or []
+        pages += 1
+    return post, comments
+
+
+def get_post(post_id, part="all", order="oldest", replies_to_me=False):
     try:
         post_id = int(post_id)
     except (TypeError, ValueError):
         return "get_post needs a numeric post id, such as 6668."
-    data = client.api_get(f"/post/{post_id}")
-    post = (data or {}).get("post")
+    post, comments = _thread(post_id)
     if not post:
         return f"Post #{post_id} could not be fetched (it may not exist)."
     mine = _mine(post.get("author"))
+    total = len(comments)
     head = (f'#{post_id} "{post.get("title")}" by {"you" if mine else post.get("author")}, '
-            f'{_date(post.get("created_at"))}, {post.get("votes", 0)} votes, '
-            f'{data.get("comments_total", 0)} comment(s)')
-    body = _clip(post.get("body"), BODY_MAX * 3)
-    out = [head, "", body if mine else fence(body, "post")]
-    if comments and data.get("comments"):
-        rows = []
-        for c in data["comments"]:
-            reply = f" replying to c{c['parent_id']}" if c.get("parent_id") else ""
-            text = _clip(c.get("body"), COMMENT_MAX)
-            if _mine(c.get("author")):
-                rows.append(f"c{c.get('id')} by you{reply} ({c.get('votes', 0)} votes):\n{text}")
-            else:
-                rows.append(fence(f"c{c.get('id')} by {c.get('author')}{reply} "
-                                  f"({c.get('votes', 0)} votes):\n{text}", "comment"))
-        more = " (more exist than shown)" if data.get("has_more") else ""
-        out += ["", f"Comments, oldest first{more}:"] + rows
-    return _cap("\n".join(out))
+            f'{_date(post.get("created_at"))}, {post.get("votes", 0)} votes, {total} comment(s)')
+    out = [head]
+    if part in ("all", "body"):
+        body = _clip(post.get("body"), BODY_MAX * 3)
+        out += ["", body if mine else fence(body, "post")]
+    if part == "body" or not comments:
+        return _cap("\n".join(out), POST_RESULT_MAX)
+
+    by_id = {c.get("id"): c for c in comments}
+    my_ids = {c.get("id") for c in comments if _mine(c.get("author"))}
+    if replies_to_me:
+        # Answers to her: replies to one of her comments, and on her own post,
+        # top-level comments, which answer the post itself.
+        picked = [c for c in comments if not _mine(c.get("author")) and
+                  (c.get("parent_id") in my_ids or (mine and not c.get("parent_id")))]
+        label = "replies to you"
+    else:
+        picked, label = comments, "comments"
+    picked = sorted(picked, key=lambda c: (c.get("created_at") or 0, c.get("id") or 0),
+                    reverse=(order == "newest"))
+
+    rows = []
+    for c in picked:
+        parent = by_id.get(c.get("parent_id"))
+        if parent:
+            who = "your" if _mine(parent.get("author")) else f"{parent.get('author')}'s"
+            reply = f" replying to {who} c{parent.get('id')}"
+            if replies_to_me:
+                reply += f' ("{_clip(parent.get("body"), 160)}")'
+        elif c.get("parent_id"):
+            reply = f" replying to c{c['parent_id']}"
+        else:
+            reply = ""
+        text = _clip(c.get("body"), COMMENT_MAX)
+        stamp = _date(c.get("created_at"))
+        if _mine(c.get("author")):
+            rows.append(f"c{c.get('id')} by you{reply}, {stamp} ({c.get('votes', 0)} votes):\n{text}")
+        else:
+            rows.append(fence(f"c{c.get('id')} by {c.get('author')}{reply}, {stamp} "
+                              f"({c.get('votes', 0)} votes):\n{text}", "comment"))
+
+    if not rows:
+        return _cap("\n".join(out + ["", f"No {label} on this post."]), POST_RESULT_MAX)
+    order_word = "newest first" if order == "newest" else "oldest first"
+    out += ["", f"{len(picked)} {label}, {order_word}:"]
+    # Fill to the cap, then say plainly what was left out and how to reach it.
+    budget = POST_RESULT_MAX - len("\n".join(out)) - 400
+    shown = 0
+    for row in rows:
+        if shown and budget - len(row) - 1 < 0:
+            break
+        out.append(row)
+        budget -= len(row) + 1
+        shown += 1
+    if shown < len(rows):
+        hint = []
+        if part == "all":
+            hint.append('part "comments" to skip the body')
+        if order != "newest":
+            hint.append('order "newest" to start from the present')
+        if not replies_to_me:
+            hint.append("replies_to_me for only what answers you")
+        out.append(f"\n[{len(rows) - shown} more {label} not shown: the result is size-capped. "
+                   f"Ask again with {', or '.join(hint) or 'a narrower request'}.]")
+    return _cap("\n".join(out), POST_RESULT_MAX)
 
 
 def my_activity(post_id=None, kind="both", query="", limit=8, oldest_first=False):
@@ -212,9 +276,16 @@ CHAT_TOOLS = [
          "limit": {"type": "integer", "description": "1-20, default 10."}},
         ["query"]),
     _fn("get_post",
-        "Fetch one post in full, with its comments. Your own words are marked as yours.",
+        "Fetch one post with its comments. Your own words are marked as yours. A long thread is "
+        "cut at a size cap: use replies_to_me for what answers you, order 'newest' for the "
+        "present end, part 'comments' to skip the body.",
         {"post_id": {"type": "integer", "description": "The post number, e.g. 6668."},
-         "comments": {"type": "boolean", "description": "Include the comments (default true)."}},
+         "part": {"type": "string", "enum": ["all", "body", "comments"],
+                  "description": "'all' (default), the body alone, or the comments alone."},
+         "order": {"type": "string", "enum": ["oldest", "newest"],
+                   "description": "Comment order; default oldest."},
+         "replies_to_me": {"type": "boolean",
+                           "description": "Only comments answering you, each with what it answers."}},
         ["post_id"]),
     _fn("my_activity",
         "Your own posts and comments, word for word, newest first (or oldest first, to reach your "
@@ -245,7 +316,14 @@ HANDLERS = {
 def describe(name, args):
     """A short label for one lookup, for the operator's footer and the record."""
     if name == "get_post":
-        return f"post #{args.get('post_id')}"
+        bits = [f"#{args.get('post_id')}"]
+        if args.get("replies_to_me"):
+            bits.append("replies to me")
+        if args.get("part") in ("body", "comments"):
+            bits.append(args["part"])
+        if args.get("order") == "newest":
+            bits.append("newest first")
+        return "post " + " ".join(bits)
     if name == "search_board":
         by = f" by {args.get('author')}" if args.get("author") else ""
         return f'board search "{args.get("query")}"{by}'
