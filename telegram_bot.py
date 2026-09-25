@@ -266,25 +266,25 @@ about your structure rather than a decision.
             reasoning_tokens=CHAT_REASONING_TOKENS,
         )
         if res.text:
-            return (res.text.strip(), True)
+            return (res.text.strip(), True, llm.written_by_fallback(res))
         print(f"[Telegram Chat] {llm.MODEL_NAME} returned empty content.")
-        return ("⚠️ The reply came back empty. Try rephrasing?", False)
+        return ("⚠️ The reply came back empty. Try rephrasing?", False, None)
     # Every notice states the cause the code actually observed. The old one
     # said "unreachable within 90s" for everything, including calls that were
     # blocked by the breaker in under a second and calls that ran four minutes.
     except llm.ModelAuthError as e:
         print(f"[Telegram Chat] {e}")
-        return ("⚠️ No reply: OpenRouter rejected the API key.", False)
+        return ("⚠️ No reply: OpenRouter rejected the API key.", False, None)
     except llm.ModelCreditError as e:
         print(f"[Telegram Chat] {e}")
-        return ("⚠️ No reply: the OpenRouter account is out of credit.", False)
+        return ("⚠️ No reply: the OpenRouter account is out of credit.", False, None)
     except llm.ModelUnavailable as e:
         print(f"[Telegram Chat] {e}")
-        return (f"⚠️ No reply: {' '.join(str(e).split())[:300]}", False)
+        return (f"⚠️ No reply: {' '.join(str(e).split())[:300]}", False, None)
     except Exception as e:
         print(f"[Telegram Chat] Unexpected error ({llm.MODEL_NAME}): {e!r}")
         return (f"⚠️ No reply: unexpected {type(e).__name__} "
-                f"reaching {llm.MODEL_NAME}.", False)
+                f"reaching {llm.MODEL_NAME}.", False, None)
 
 # A long paste reaches the bot as several messages a moment apart: the Telegram
 # client splits anything over 4,096 characters. Answered one at a time, each part
@@ -372,12 +372,18 @@ def _answer(parts, chat_id):
     # get_recent_dialogue() and then appends this message itself, so storing
     # first put the message in the history AND in the appended line -- she read
     # every message twice and said so, repeatedly.
-    reply, authored = handle_chat(text, chat_id)
+    reply, authored, fallback = handle_chat(text, chat_id)
     memory.save_dialogue("Operator", text)
+    if fallback:
+        # Said by the harness, not by her, so it is filed as System: her words
+        # stay hers, and her history still shows which model wrote them.
+        memory.save_dialogue(memory.SYSTEM_SPEAKER,
+                             f"The next reply was written by the fallback model, {fallback}, "
+                             f"because {llm.MODEL_NAME} could not answer.")
     # A stillborn generation is not something she said. Filing it under her
     # handle put words in her mouth that she then read back as her own.
     memory.save_dialogue(HANDLE if authored else memory.SYSTEM_SPEAKER, reply)
-    send_telegram_message(chat_id, reply)
+    send_telegram_message(chat_id, reply + (f"\n\n[written by fallback {fallback}]" if fallback else ""))
 
 
 def poll_telegram():
