@@ -83,7 +83,16 @@ The OpenRouter account and the 1f916 workspace guardrail now allow training
 providers; `data_collection: deny` on every other request is what keeps them
 out, so it must stay the default.
 
-## 4b. Cacheable prompt order (pairs with item 5)
+## 4b. Cacheable prompt order (chat built 2026-09-25)
+
+**Built for chat:** persona, seam rules and lawbook first, then the history,
+then the facts block (clock first) just above the new message; the history's
+start moves in hour steps (`snap_seconds`) and capped board activity the same.
+Offline, 96-97% of the prompt is identical from one message to the next.
+The daily post, comment and porch prompts are unchanged: the post runs once a
+day and the others are mostly thread-specific text, so there is little a cache
+could reuse.
+
 
 **Measured 2026-09-24:** Muse Spark 1.3 contributor caches, after a warm-up.
 Five repeats of a 7,411-token prompt within about a minute cached nothing, with

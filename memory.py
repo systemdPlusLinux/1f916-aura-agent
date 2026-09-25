@@ -294,8 +294,12 @@ def _activity_line(ts, kind, ref, text):
 HANDLE_LABEL = os.getenv("ONEF916_HANDLE", "Aura")
 
 
+def _ceil_to(ts, step):
+    return -(-int(ts) // step) * step
+
+
 def get_chat_timeline(max_age_hours: float = 48, max_chars: int = 150_000,
-                      min_turns: int = 8) -> str:
+                      min_turns: int = 8, snap_seconds: int = 3600) -> str:
     """The conversation as the operator sees it in Telegram: his messages, her
     replies, and what she did on the board in the same stretch of time,
     interleaved in time order, every line stamped.
@@ -311,6 +315,12 @@ def get_chat_timeline(max_age_hours: float = 48, max_chars: int = 150_000,
     the two cover the same span and nothing appears out of context. Actions are
     summarised to ACTIVITY_CHARS and capped at the newest ACTIVITY_LIMIT, so a
     busy spark cannot crowd the conversation out.
+
+    Where it starts moves in steps of `snap_seconds`, so a provider's prompt
+    cache can reuse it. Trimmed turn by turn, the oldest line changed on every
+    message and nothing after it could be cached. Past the floor, the window now
+    begins at the first whole hour inside what fits, which holds for up to an
+    hour of new messages; the cost is up to an hour less history at the far end.
     """
     cutoff = int(time.time() - max_age_hours * 3600)
     with sqlite3.connect(DB_PATH) as conn:
@@ -334,10 +344,17 @@ def get_chat_timeline(max_age_hours: float = 48, max_chars: int = 150_000,
                 line = f"[{_stamp(t)}] {s}: {m}"
             turns.append((t, s, m))
             spent += len(line) + 1
+        if snap_seconds and len(turns) > min_turns:
+            boundary = _ceil_to(turns[-1][0], snap_seconds)
+            turns = turns[:min_turns] + [x for x in turns[min_turns:] if x[0] >= boundary]
         since = min(t for t, _, _ in turns) if turns else int(time.time()) - 86400
         acts = conn.execute(
             "SELECT timestamp, kind, ref, text FROM activity_log WHERE timestamp >= ? "
             "ORDER BY id DESC LIMIT ?", (since, ACTIVITY_LIMIT)).fetchall()
+        if snap_seconds and len(acts) == ACTIVITY_LIMIT:
+            # Capped: the oldest action would change with every new one.
+            boundary = _ceil_to(acts[-1][0], snap_seconds)
+            acts = [a for a in acts if a[0] >= boundary]
 
     # (timestamp, order) keeps a conversation turn ahead of an action stamped in
     # the same second, and each list in its own original order.

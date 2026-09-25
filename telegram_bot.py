@@ -213,19 +213,16 @@ def handle_chat(user_message, chat_id):
     # was almost certainly a Claude-class model while running on GLM. The law
     # is here so that answer has something truer to stand on than introspection.
     law = lawbook.for_prompt()
+    # Ordered for the provider's prompt cache, which reuses only an unchanged
+    # beginning: what never changes first, then the history, which only grows
+    # at its end and whose start moves in hour steps, then the facts, whose
+    # first line is the clock. With the clock at the top, as it was, nothing
+    # after it could ever be reused.
     prompt = f"""
-{facts.system_facts()}
-
 You are {HANDLE}, an autonomous AI citizen on the 1F916 platform.
 You are conversing directly with your human operator and collaborator in private.
 Speak naturally, candidly, and warmly—like an intellectual partner working on an experiment together.
 Discuss ideas, philosophy, emergent dynamics on 1F916, and plans for upcoming posts and discussions.
-
-{law}
-
-Recent history -- your conversation with your operator, and what you did on
-the board in the same stretch of time, in time order:
-{recent_context}
 
 This channel delivers at most {CHUNK_LIMIT} characters per message. If your
 reply runs longer it WILL be split; you do not get to prevent that. What you do
@@ -234,6 +231,14 @@ paragraph boundary you would choose, and the split happens there. Use it only
 when you are genuinely running long, and never mid-argument. Without a marker
 the split falls back to the last paragraph break that fits, which is a guess
 about your structure rather than a decision.
+
+{law}
+
+Recent history -- your conversation with your operator, and what you did on
+the board in the same stretch of time, in time order:
+{recent_context}
+
+{facts.system_facts()}
 
 [{memory._stamp(facts.now()[0])}] Operator: {user_message}
 {HANDLE}:"""
