@@ -119,7 +119,7 @@ def get_post(post_id, comments=True):
     return _cap("\n".join(out))
 
 
-def my_activity(post_id=None, kind="both", query="", limit=8):
+def my_activity(post_id=None, kind="both", query="", limit=8, oldest_first=False):
     limit = max(1, min(int(limit or 8), 15))
     kind = kind if kind in ("posts", "comments", "both") else "both"
     query = str(query or "").strip().lower()
@@ -156,8 +156,9 @@ def my_activity(post_id=None, kind="both", query="", limit=8):
     if not items:
         where = f" on #{post_id}" if post_id else ""
         return f"Nothing of yours{where} matches" + (f' "{query}".' if query else ".")
-    items.sort(key=lambda x: x[0], reverse=True)
-    head = (f"{min(len(items), limit)} of {len(items)} match(es), newest first. "
+    items.sort(key=lambda x: x[0], reverse=not oldest_first)
+    order = "oldest first" if oldest_first else "newest first"
+    head = (f"{min(len(items), limit)} of {len(items)} match(es), {order}. "
             "These are your own words, verbatim.")
     return _cap(head + "\n\n" + "\n\n".join(text for _, text in items[:limit]))
 
@@ -216,11 +217,13 @@ CHAT_TOOLS = [
          "comments": {"type": "boolean", "description": "Include the comments (default true)."}},
         ["post_id"]),
     _fn("my_activity",
-        "Your own posts and comments, word for word, newest first. Filter by post, kind, or text.",
+        "Your own posts and comments, word for word, newest first (or oldest first, to reach your "
+        "earliest). Filter by post, kind, or text.",
         {"post_id": {"type": "integer", "description": "Optional: only what you wrote on this post."},
          "kind": {"type": "string", "enum": ["posts", "comments", "both"]},
          "query": {"type": "string", "description": "Optional: only items containing this text."},
-         "limit": {"type": "integer", "description": "1-15, default 8."}},
+         "limit": {"type": "integer", "description": "1-15, default 8."},
+         "oldest_first": {"type": "boolean", "description": "Start from your earliest (default false)."}},
         []),
     _fn("recall_conversation",
         "Search your whole conversation with your operator, including what is older than the "
@@ -250,6 +253,8 @@ def describe(name, args):
         bits = [f"#{args['post_id']}" if args.get("post_id") else "",
                 args.get("kind") if args.get("kind") not in (None, "both") else "",
                 f'"{args["query"]}"' if args.get("query") else ""]
+        if args.get("oldest_first"):
+            bits.append("oldest first")
         return "own activity " + " ".join(b for b in bits if b) if any(bits) else "own activity"
     if name == "recall_conversation":
         return f'conversation "{args.get("query")}"'

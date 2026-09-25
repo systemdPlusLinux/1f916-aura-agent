@@ -154,6 +154,10 @@ _consecutive_failures = 0
 # bookkeeping field. Token counts still come back either way.
 _usage_ext = True
 
+# A tool call written into the reply as text, in a model's own markup, instead
+# of made through the API. GLM does this when told it may not call tools.
+_TOOL_MARKUP = re.compile(r"<tool_call>.*?(?:</tool_call>|$)", re.DOTALL)
+
 _FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
 
@@ -502,6 +506,7 @@ def generate(prompt, system_instruction=None, temperature=0.7,
     last_error = None
     tool_rounds = 0
     lookups = []
+    limit_said = False
 
     while True:
         step = min(attempt, len(chain) - 1)
@@ -540,7 +545,21 @@ def generate(prompt, system_instruction=None, temperature=0.7,
                         print(f"[{model}] lookup {tool_rounds}: {label} -> {len(output)} chars")
                     messages.append({"role": "tool", "tool_call_id": call["id"],
                                      "name": call["name"], "content": output})
+                if tool_rounds >= max_tool_rounds and not limit_said:
+                    # tool_choice "none" alone was not enough: GLM answered it
+                    # by writing a fifth call out as text, in its own markup,
+                    # and that went out as her reply (2026-09-25).
+                    limit_said = True
+                    messages.append({"role": "user", "content": (
+                        f"[System] That was the last of your {max_tool_rounds} lookups for this "
+                        "reply. Write your reply now from what you have; do not call or write "
+                        "out any more tools.")})
                 continue
+            if tools:
+                text = _TOOL_MARKUP.sub("", result.text or "").strip()
+                if not text:
+                    raise _Transient("wrote a tool call out as text instead of a reply")
+                result.text = text
             if use_breaker:
                 _consecutive_failures = 0
             result.fallback = step > 0
