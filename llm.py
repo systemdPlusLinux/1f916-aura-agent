@@ -177,9 +177,11 @@ class ModelCreditError(ModelUnavailable):
 class Completion:
     """What a call returns. `.text` is the contract every call site reads."""
 
-    __slots__ = ("text", "usage", "model", "finish_reason", "provider", "fallback")
+    __slots__ = ("text", "usage", "model", "finish_reason", "provider", "fallback",
+                 "tool_calls", "lookups")
 
-    def __init__(self, text, usage=None, model=None, finish_reason=None, provider=None):
+    def __init__(self, text, usage=None, model=None, finish_reason=None, provider=None,
+                 tool_calls=None):
         self.text = text
         self.usage = usage or {}
         self.model = model
@@ -187,6 +189,10 @@ class Completion:
         self.provider = provider
         # True when the fallback model wrote this rather than MODEL_NAME.
         self.fallback = False
+        # Set on a round that asked for tools: [{"id", "name", "arguments"}].
+        self.tool_calls = tool_calls or []
+        # Set on the final reply: a label for each lookup made on the way.
+        self.lookups = []
 
 
 def reset_breaker():
@@ -253,11 +259,14 @@ def _relayed_provider(body):
 def _read_stream(res, stop_at):
     """Assemble a streamed completion, abandoning it the moment `stop_at` passes.
 
-    Returns (content, finish_reason, usage, model, provider). Raises _Transient
-    if the deadline passes, the provider reports an error mid-stream, or the
-    stream ends without finishing.
+    Returns (content, finish_reason, usage, model, provider, tool_calls). Raises
+    _Transient if the deadline passes, the provider reports an error mid-stream,
+    or the stream ends without finishing. Tool calls arrive in pieces keyed by
+    index -- the name once, the arguments as a string in fragments -- and are
+    assembled here.
     """
     content, finish, usage, model, provider, done = [], None, {}, None, None, False
+    calls = {}
     for raw in res.iter_lines():
         if time.monotonic() > stop_at:
             # Closing the stream (the caller's `with`) is also what tells
@@ -289,16 +298,25 @@ def _read_stream(res, stop_at):
             delta = choice.get("delta") or {}
             if delta.get("content"):
                 content.append(delta["content"])
+            for tc in delta.get("tool_calls") or []:
+                slot = calls.setdefault(tc.get("index", 0), {"id": None, "name": "", "arguments": ""})
+                slot["id"] = tc.get("id") or slot["id"]
+                fn = tc.get("function") or {}
+                slot["name"] += fn.get("name") or ""
+                slot["arguments"] += fn.get("arguments") or ""
             finish = choice.get("finish_reason") or finish
     if finish == "error":
         raise _Transient("provider error mid-stream (finish_reason=error)")
     if not done and finish is None:
         raise _Transient("stream ended before the reply finished")
-    return "".join(content), finish, usage, model, provider
+    tool_calls = [calls[i] for i in sorted(calls)]
+    for n, call in enumerate(tool_calls):
+        call["id"] = call["id"] or f"call_{int(time.time())}_{n}"
+    return "".join(content), finish, usage, model, provider, tool_calls
 
 
 def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None,
-             model=None, prefs=None):
+             model=None, prefs=None, tools=None, tool_choice=None):
     """One HTTP call, which may take at most `timeout` seconds in all. Returns a
     Completion, or raises for the caller to judge.
 
@@ -325,6 +343,10 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None,
         payload["response_format"] = {"type": "json_object"}
     if reasoning_tokens:
         payload["reasoning"] = {"max_tokens": int(reasoning_tokens)}
+    if tools:
+        payload["tools"] = tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
 
     stop_at = time.monotonic() + timeout
     with requests.post(
@@ -383,7 +405,7 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None,
             # generate() may still try the fallback model.
             raise ModelUnavailable(f"HTTP {res.status_code}: {res.text[:300]}")
 
-        content, finish, usage, model, provider = _read_stream(res, stop_at)
+        content, finish, usage, model, provider, tool_calls = _read_stream(res, stop_at)
 
     _log_usage(usage, provider, model or MODEL_NAME)
 
@@ -401,6 +423,12 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None,
                 "without producing an answer"
             )
         raise _Transient(f"response truncated at max_tokens={MAX_TOKENS}")
+
+    if tool_calls:
+        # A round that asks for lookups instead of answering: the caller runs
+        # them and asks again. Its text, if any, is not the reply.
+        return Completion(content, usage=usage, model=model, finish_reason=finish,
+                          provider=provider, tool_calls=tool_calls)
 
     text = _unfence(content).strip()
     if not text:
@@ -425,7 +453,10 @@ class _Transient(Exception):
 
 def generate(prompt, system_instruction=None, temperature=0.7,
              deadline_seconds=180, json_mode=True, on_retry=None,
-             use_breaker=True, reasoning_tokens=None):
+             use_breaker=True, reasoning_tokens=None,
+             tools=None, tool_handlers=None, max_tool_rounds=4, describe_tool=None):
+    # max_tool_rounds caps individual lookups per call, however many rounds
+    # they arrive in.
     """Generate content, retrying transient failures within a time budget.
 
     Raises ModelUnavailable if the deadline passes or the breaker is open. Bad
@@ -464,8 +495,13 @@ def generate(prompt, system_instruction=None, temperature=0.7,
     chain = _route()
     started = time.monotonic()
     deadline = started + deadline_seconds
+    # The first model's share is of the whole call, tool rounds included, so a
+    # slow run of lookups on it still leaves the fallback time to answer.
+    primary_stop = started + deadline_seconds * PRIMARY_SHARE
     attempt = 0
     last_error = None
+    tool_rounds = 0
+    lookups = []
 
     while True:
         step = min(attempt, len(chain) - 1)
@@ -473,16 +509,42 @@ def generate(prompt, system_instruction=None, temperature=0.7,
         has_next = step + 1 < len(chain)
         # An attempt may use whatever budget is left, and no more -- except
         # the first model's, which leaves a share for the fallback.
-        left = deadline - time.monotonic()
-        if has_next:
-            left = min(left, deadline_seconds * PRIMARY_SHARE)
+        left = (primary_stop if has_next else deadline) - time.monotonic()
         attempt_timeout = max(1.0, left)
         try:
+            # After the last permitted round, tools stay declared (the history
+            # holds tool calls) but may not be called: she answers from what
+            # she has.
+            choice = "none" if tools and tool_rounds >= max_tool_rounds else None
             result = _request(messages, temperature, json_mode, timeout=attempt_timeout,
-                              reasoning_tokens=reasoning_tokens, model=model, prefs=prefs)
+                              reasoning_tokens=reasoning_tokens, model=model, prefs=prefs,
+                              tools=tools, tool_choice=choice)
+            if result.tool_calls:
+                if not tools or tool_rounds >= max_tool_rounds:
+                    raise _Transient("asked for a lookup after the lookup limit")
+                messages.append({"role": "assistant", "content": result.text or None,
+                                 "tool_calls": [{"id": c["id"], "type": "function",
+                                                 "function": {"name": c["name"],
+                                                              "arguments": c["arguments"] or "{}"}}
+                                                for c in result.tool_calls]})
+                # The limit counts lookups, not rounds: one round can ask for
+                # several. Calls past it are answered, not run.
+                for call in result.tool_calls:
+                    if tool_rounds >= max_tool_rounds:
+                        output = (f"Not run: the limit of {max_tool_rounds} lookups a reply "
+                                  "is reached. Answer from what you have.")
+                    else:
+                        tool_rounds += 1
+                        output, label = _run_tool(call, tool_handlers or {}, describe_tool)
+                        lookups.append(label)
+                        print(f"[{model}] lookup {tool_rounds}: {label} -> {len(output)} chars")
+                    messages.append({"role": "tool", "tool_call_id": call["id"],
+                                     "name": call["name"], "content": output})
+                continue
             if use_breaker:
                 _consecutive_failures = 0
             result.fallback = step > 0
+            result.lookups = lookups
             return result
         except (ModelAuthError, ModelCreditError):
             raise
@@ -528,6 +590,28 @@ def generate(prompt, system_instruction=None, temperature=0.7,
             print(f"[{model}] attempt {attempt} failed ({last_error}); "
                   f"retrying in {delay:.0f}s, {remaining:.0f}s of budget left")
         time.sleep(delay)
+
+
+def _run_tool(call, handlers, describe=None):
+    """Run one lookup she asked for. Returns (output for her, label for the
+    record). Never raises: a failed lookup is an answer she can read."""
+    name = call.get("name") or ""
+    try:
+        args = json.loads(call.get("arguments") or "{}")
+        if not isinstance(args, dict):
+            raise ValueError("arguments are not an object")
+    except ValueError as e:
+        return f"The arguments to {name} could not be read ({e}).", f"{name} (unreadable arguments)"
+    label = describe(name, args) if describe else name
+    handler = handlers.get(name)
+    if not handler:
+        return f"There is no tool called {name}.", f"{name} (no such tool)"
+    try:
+        return str(handler(**args)), label
+    except TypeError as e:
+        return f"{name} was called with arguments it does not take ({e}).", f"{label} (bad arguments)"
+    except Exception as e:
+        return f"{name} failed: {type(e).__name__}: {str(e)[:200]}", f"{label} (failed)"
 
 
 def written_by_fallback(result):

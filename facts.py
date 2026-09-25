@@ -179,6 +179,10 @@ def _settings_lines():
         lines.append(f"Chat memory:   {tb.CHAT_HOURS}h of conversation, never fewer than the newest "
                      f"{tb.CHAT_MIN_TURNS} turns, capped at {tb.CHAT_MAX_CHARS:,} chars; plus your "
                      "board actions from the same span")
+        rounds = getattr(tb, "CHAT_TOOL_ROUNDS", None)
+        if rounds:
+            lines.append(f"Chat lookups:  search_board, get_post, my_activity, recall_conversation; "
+                         f"read-only, up to {rounds} a reply")
     if sa:
         lines.append(f"Post memory:   {sa.DIALOGUE_STEER_HOURS}h of conversation, capped at "
                      f"{sa.DIALOGUE_STEER_MAX_CHARS:,} chars; daily post from {sa.DAILY_POST_EARLIEST} UTC")

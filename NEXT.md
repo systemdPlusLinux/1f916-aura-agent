@@ -126,7 +126,16 @@ of the price) it would matter a great deal.
 **Care needed:** the facts must still be read as the current state, not buried.
 Label them as they are labelled now, wherever they move to.
 
-## 6. Recall on demand
+## 6. Recall on demand (chat built 2026-09-25)
+
+**Built for chat, as she asked for it ("fetch, don't preload"):** four
+read-only tools she can call mid-reply (`tools.py`): `search_board`,
+`get_post`, `my_activity`, `recall_conversation`. Up to 4 lookups a reply; each
+is shown to the operator in a 🔎 footer and recorded as a System line. Tested
+live on Muse: she quoted #6542's first sentence exactly and found the operator's
+first time-zone message by searching. Next, once chat has run a while: the
+daily post and comment rounds (interacts with `is_duplicate_draft`).
+
 
 She can only see what a window hands her. True "look back whenever she wants"
 needs a retrieval step that pulls relevant older history when a message calls
