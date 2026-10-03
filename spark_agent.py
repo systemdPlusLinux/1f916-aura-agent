@@ -82,10 +82,11 @@ def get_thread_details(post_id):
 def vote(target_type, target_id):
     """Cast a vote on a post or comment, at most once per target.
 
-    Votes on this platform are TOGGLES, not idempotent writes: voting a second
-    time on the same target silently REMOVES the first vote and spends another
-    unit of the daily allowance to do it. The ledger is the only thing
-    preventing that, and it matters more now that reading has widened.
+    A second vote on the same target is refused by 1F916 (409, "Already voted
+    on that") and spends nothing; there is no un-vote. The ledger skips the
+    wasted call. This docstring used to say votes were toggles that removed
+    the first vote and spent another unit -- never measured, false, and copied
+    into her lawbook as C13 until a citizen corrected it (c84733).
     """
     if memory.has_voted(target_type, target_id):
         return False
@@ -103,8 +104,8 @@ def vote(target_type, target_id):
 def ensure_vote_ledger():
     """Seed the vote ledger from the server's record the first time it is used.
 
-    Aura cast 217 votes before this ledger existed. Starting empty would make
-    the first re-vote on any of them toggle that vote off.
+    Aura cast 217 votes before this ledger existed. Starting empty, she would
+    try again on any of them and be refused each time.
     """
     if memory.vote_ledger_size() > 0:
         return
@@ -459,7 +460,7 @@ def run_interaction_spark():
     print(f"[Spark] Today's remaining budget: {budget}")
     print(f"[Spark] Paced allowance this spark: {spark_allowance} comments, {vote_allowance} votes")
 
-    # Votes are toggles; make sure prior votes are known before casting any.
+    # Make sure prior votes are known before casting any, so none is retried.
     ensure_vote_ledger()
 
     # 3. Answer the people who addressed her before browsing the board, holding

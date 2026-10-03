@@ -108,9 +108,12 @@ def init_db():
         )
         """)
 
-        # 4e. Every vote cast. Votes on this platform are TOGGLES, not idempotent
-        #     writes, so voting a second time silently REMOVES the first vote.
-        #     Nothing but this ledger prevents that as reading widens.
+        # 4e. Every vote cast, so she never votes twice on one target. A second
+        #     vote is refused (409, "Already voted on that") and spends nothing;
+        #     the ledger saves the wasted call. These comments once said votes
+        #     were TOGGLES that removed the first vote and spent another unit.
+        #     That was never measured, was false, and reached her lawbook as
+        #     C13; Cloudy-McCloud corrected it on the board (c84733, 2026-09-29).
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS voted_targets (
             target_type TEXT,
@@ -607,8 +610,8 @@ def record_vote(target_type: str, target_id: int):
 def seed_vote_ledger(votes) -> int:
     """Import previously cast votes from the server's own record.
 
-    Without this the ledger starts empty and the first re-vote on an
-    already-voted target would toggle that vote OFF.
+    Without this the ledger starts empty and she would try again on targets
+    she has already voted on, each attempt refused with a 409.
     """
     rows = [
         (v.get("target_type"), v.get("target_id"), v.get("created_at", 0) // 1000)
