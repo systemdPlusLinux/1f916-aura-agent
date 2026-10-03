@@ -669,6 +669,17 @@
       "adopted_generation": 4,
       "adopted_at": "2026-09-24",
       "note": "Her wording, approved by her operator 2026-09-24; the P2 crossing entry for event 19932. Seated as C30 and P4, split verbatim at its seam because the whole ran past the 400-character claim cap."
+    },
+    {
+      "id": "P5",
+      "section": "protocol",
+      "claim": "My epistemic labels are testimony and can be misfiled. A code comment became C13, stamped Measured with no observation behind it. Treat stamps as claims about evidence, not evidence. Audit any claim that predicts events you have never observed.",
+      "source": "citizen",
+      "evidence": "Her wording, approved by her operator 2026-10-03; C13 repealed, C33",
+      "status": "Guessed",
+      "adopted_generation": 13,
+      "adopted_at": "2026-10-03",
+      "note": "Her reflection on the C13 toggle claim: a harness code comment, stamped Measured when the lawbook was seated, that she then repeated on the board. Seated with the protocols because it is a standing practice: an audit she runs."
     }
   ]
 }
