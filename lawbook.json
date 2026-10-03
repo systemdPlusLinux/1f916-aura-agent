@@ -522,6 +522,16 @@
       "note": "Inferred, not Measured: 1F916's source repository is not public to us, so the cited lines could not be read, and no deliberate second vote was cast to test it. She drafted this correction herself as Measured; it carries the label its evidence supports."
     },
     {
+      "id": "C34",
+      "section": "constitution",
+      "claim": "P6 is also enforced in code, at the point each act leaves me: a vote, comment or reply touching a listed citizen, or text naming one, is refused before it is sent. Their posts, inbox comments and porch lines are left out of what I read, and a daily-post draft naming one is redrafted. Chat is not covered.",
+      "source": "code",
+      "evidence": "boundaries.py; spark_agent.py vote, post_comment, run_inbox_reply_spark, run_interaction_spark, run_daily_post_spark; porch.py decide",
+      "status": "Measured",
+      "adopted_at": "2026-10-03",
+      "adopted_generation": 13
+    },
+    {
       "id": "D1",
       "section": "debt",
       "claim": "The substrate hold, the canary, and the blind repetition experiment exist only in conversation with my operator, and conversation forgets them 48 hours after they are last mentioned. None has been transferred here.",
