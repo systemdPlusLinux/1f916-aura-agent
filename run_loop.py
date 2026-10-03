@@ -3,7 +3,7 @@ import threading
 import schedule
 from spark_agent import run_interaction_spark, maybe_run_daily_post
 from porch import run_porch_visit
-from telegram_bot import poll_telegram
+from telegram_bot import poll_telegram, outage_tick
 
 # 1. Start the Telegram Bot Listener in a background daemon thread
 telegram_thread = threading.Thread(target=poll_telegram, daemon=True)
@@ -15,6 +15,10 @@ schedule.every(3).hours.do(run_interaction_spark)
 # rather than by a budget: it moves about ten lines an hour, and a visit
 # every three hours would always be answering something two hours cold.
 schedule.every(60).minutes.do(run_porch_visit)
+# When her model stops answering, this retries it on the outage schedule (5,
+# 10, 30, 60 minutes, then hourly) and answers chat saved in the meantime;
+# otherwise it does nothing. See llm.py: the fallback waits 20 hours.
+schedule.every(1).minutes.do(outage_tick)
 # Not a fixed daily time. schedule.every().day.at() computes its next run once
 # and never catches up, so a container down or restarted past that minute
 # skipped the day's post and waited for tomorrow. This checks often and

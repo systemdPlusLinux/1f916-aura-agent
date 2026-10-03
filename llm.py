@@ -114,6 +114,18 @@ FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "z-ai/glm-5.3-flash").strip()
 FALLBACK_PROVIDER_ORDER = _csv("LLM_FALLBACK_PROVIDER_ORDER", "gmicloud,novita")
 FALLBACK_DATA_COLLECTION = os.getenv("LLM_FALLBACK_DATA_COLLECTION", "deny").strip().lower()
 
+# The fallback is a last resort, not a second opinion. On 2026-10-02 she wrote
+# "When I fail, someone else signs my name": one bad minute from Meta was
+# enough for GLM to write under her name. Now a failed call opens an outage
+# instead. While it lasts, calls fail at once without reaching OpenRouter, the
+# model is retried on a widening schedule (PROBE_MINUTES, then hourly) by a
+# background job, and the fallback answers only once the outage has run for
+# FALLBACK_AFTER_HOURS. The first success ends it.
+FALLBACK_AFTER_HOURS = float(os.getenv("LLM_FALLBACK_AFTER_HOURS", "20"))
+PROBE_MINUTES = [int(m) for m in _csv("LLM_PROBE_MINUTES", "5,10,30,60")]
+OUTAGE_KEY = "llm_outage"
+_outage_mem = {}   # used when no database is reachable (standalone runs)
+
 # The share of a call's deadline the first model may spend while a fallback is
 # waiting. Without it a slow first attempt uses the whole budget, since an
 # attempt may otherwise run to the deadline, and leaves the fallback no time.
@@ -130,6 +142,93 @@ def _provider_prefs(order=None, data_collection=None):
     if PROVIDER_IGNORE:
         prefs["ignore"] = PROVIDER_IGNORE
     return prefs
+
+
+def _state(value=None, clear=False):
+    """The outage record, kept in agent_state so every thread and restart
+    sees the same one. Falls back to memory if the database is unreachable."""
+    try:
+        import memory   # lazily: llm is imported by modules memory never sees
+        if clear:
+            memory.set_state(OUTAGE_KEY, "")
+        elif value is not None:
+            memory.set_state(OUTAGE_KEY, json.dumps(value))
+        else:
+            raw = memory.get_state(OUTAGE_KEY)
+            return json.loads(raw) if raw else None
+    except Exception:
+        if clear:
+            _outage_mem.pop("o", None)
+        elif value is not None:
+            _outage_mem["o"] = value
+        else:
+            return _outage_mem.get("o")
+
+
+def _notify(text):
+    try:
+        from telegram_bot import notify_operator   # lazily, as lawbook does
+        notify_operator(text)
+    except Exception as e:
+        print(f"[LLM] Could not notify operator: {e}")
+
+
+def _when(ts):
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
+
+
+def outage():
+    """The open outage of MODEL_NAME, or None: {since, attempts, next, cause}."""
+    return _state()
+
+
+def fallback_allowed():
+    o = outage()
+    return bool(o) and time.time() - o["since"] >= FALLBACK_AFTER_HOURS * 3600
+
+
+def probe_due():
+    o = outage()
+    return bool(o) and time.time() >= o["next"]
+
+
+def _note_failure(cause):
+    o = outage()
+    now = time.time()
+    if not o:
+        o = {"since": now, "attempts": 1, "cause": str(cause)[:300], "fallback_noticed": False}
+        print(f"[{MODEL_NAME}] outage opened: {cause}")
+        _notify(f"⚠️ {MODEL_NAME} is not answering ({' '.join(str(cause).split())[:160]}). "
+                f"Retrying after {', '.join(str(m) for m in PROBE_MINUTES)} minutes, then hourly; "
+                f"the fallback writes only after {FALLBACK_AFTER_HOURS:g} hours.")
+    else:
+        o["attempts"] += 1
+        o["cause"] = str(cause)[:300]
+    step = o["attempts"] - 1
+    o["next"] = now + 60 * (PROBE_MINUTES[step] if step < len(PROBE_MINUTES) else 60)
+    _state(o)
+
+
+def _note_success(model):
+    if model != MODEL_NAME:
+        return
+    o = outage()
+    if o:
+        hours = (time.time() - o["since"]) / 3600
+        _state(clear=True)
+        print(f"[{MODEL_NAME}] outage closed after {hours:.1f}h")
+        _notify(f"✅ {MODEL_NAME} is answering again, after {hours:.1f} hours.")
+
+
+def probe():
+    """One small call to MODEL_NAME alone, for the outage job. Returns True if
+    it answered; either way the outage record is updated."""
+    try:
+        generate("Reply with the single word OK.", json_mode=False, deadline_seconds=60,
+                 use_breaker=False, reasoning_tokens=200, _probe=True)
+        return True
+    except ModelUnavailable:
+        return False
 
 
 def _route():
@@ -373,7 +472,7 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None,
             # returned invalid_api_key for every contributor-tier call while the
             # key itself was valid and GLM answered on it. Read as a bad key,
             # it skipped the fallback and told the operator the key was wrong.
-            raise ModelUnavailable(
+            raise _Transient(
                 f"{_relayed_provider(res.text)} refused OpenRouter's request (HTTP 401, "
                 f"provider-side): {res.text[:200]}")
         if res.status_code == 401:
@@ -389,6 +488,12 @@ def _request(messages, temperature, json_mode, timeout, reasoning_tokens=None,
         if res.status_code == 429 or res.status_code >= 500:
             # Transient: worth waiting out inside the caller's deadline.
             raise _Transient(f"HTTP {res.status_code}: {res.text[:200]}")
+        if 400 <= res.status_code < 500 and _relayed_provider(res.text):
+            # Relayed from a provider, not raised by OpenRouter: Meta's
+            # intermittent 400 "Provider returned error" (2026-09-25) cleared
+            # on retry. Retried within the call's deadline, not taken as final.
+            raise _Transient(f"HTTP {res.status_code} from {_relayed_provider(res.text)}, "
+                             f"provider-side: {res.text[:200]}")
         if res.status_code != 200:
             # Only a rejection that names the usage field is about the usage
             # field. Treating every 4xx as one turned "no endpoint can serve
@@ -458,7 +563,8 @@ class _Transient(Exception):
 def generate(prompt, system_instruction=None, temperature=0.7,
              deadline_seconds=180, json_mode=True, on_retry=None,
              use_breaker=True, reasoning_tokens=None,
-             tools=None, tool_handlers=None, max_tool_rounds=4, describe_tool=None):
+             tools=None, tool_handlers=None, max_tool_rounds=4, describe_tool=None,
+             _probe=False):
     # max_tool_rounds caps individual lookups per call, however many rounds
     # they arrive in.
     """Generate content, retrying transient failures within a time budget.
@@ -497,6 +603,23 @@ def generate(prompt, system_instruction=None, temperature=0.7,
 
     reasoning_tokens = reasoning_tokens or REASONING_MAX_TOKENS
     chain = _route()
+    # The fallback is only in the chain once an outage has run its course.
+    if len(chain) > 1 and (_probe or not fallback_allowed()):
+        chain = chain[:1]
+    o = outage()
+    if o and not _probe and not fallback_allowed():
+        # Waiting: the outage job retries on schedule, and every other call
+        # stands down rather than adding its own retries.
+        raise ModelUnavailable(
+            f"{MODEL_NAME} has not answered since {_when(o['since'])}; next try "
+            f"{_when(o['next'])}, the fallback only after {FALLBACK_AFTER_HOURS:g}h "
+            f"(last cause: {o.get('cause', '')[:120]})")
+    if o and len(chain) > 1 and not o.get("fallback_noticed"):
+        o["fallback_noticed"] = True
+        _state(o)
+        _notify(f"↪ {MODEL_NAME} has not answered for {FALLBACK_AFTER_HOURS:g} hours. "
+                f"{chain[1][0]} now writes in her place, marked as the fallback, "
+                "until it recovers.")
     started = time.monotonic()
     deadline = started + deadline_seconds
     # The first model's share is of the whole call, tool rounds included, so a
@@ -564,6 +687,8 @@ def generate(prompt, system_instruction=None, temperature=0.7,
                 _consecutive_failures = 0
             result.fallback = step > 0
             result.lookups = lookups
+            if step == 0:
+                _note_success(model)
             return result
         except (ModelAuthError, ModelCreditError):
             raise
@@ -574,6 +699,7 @@ def generate(prompt, system_instruction=None, temperature=0.7,
                 if step:
                     raise ModelUnavailable(
                         f"{chain[0][0]} failed ({last_error}); {model} failed ({e})") from e
+                _note_failure(e)
                 raise
             last_error = e
         except _Transient as e:
@@ -587,6 +713,8 @@ def generate(prompt, system_instruction=None, temperature=0.7,
             if use_breaker:
                 _consecutive_failures += 1
             tried = " then ".join(m for m, _ in chain[:step + 1])
+            if step == 0:
+                _note_failure(last_error)
             # Report the time actually spent, not the budget that was set.
             raise ModelUnavailable(
                 f"{tried} gave no usable reply in {time.monotonic() - started:.0f}s "

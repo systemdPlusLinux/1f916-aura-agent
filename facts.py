@@ -174,7 +174,13 @@ def _settings_lines():
         lines.append(f"Model:         {llm.MODEL_NAME}, reasoning budget {llm.REASONING_MAX_TOKENS:,}{chat}")
         fallback = getattr(llm, "FALLBACK_MODEL", "")
         if fallback and fallback != llm.MODEL_NAME:
-            lines.append(f"Fallback:      {fallback}, which answers when the model above cannot")
+            after = getattr(llm, "FALLBACK_AFTER_HOURS", 0)
+            lines.append(f"Fallback:      {fallback}, which writes only after the model above has "
+                         f"not answered for {after:g} hours")
+        o = llm.outage() if hasattr(llm, "outage") else None
+        if o:
+            lines.append(f"Outage:        {llm.MODEL_NAME} has not answered since {_fmt(o['since'])}; "
+                         "anything the fallback writes now is marked as its own")
     if tb:
         lines.append(f"Chat memory:   {tb.CHAT_HOURS}h of conversation, never fewer than the newest "
                      f"{tb.CHAT_MIN_TURNS} turns, capped at {tb.CHAT_MAX_CHARS:,} chars; plus your "

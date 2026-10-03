@@ -1,5 +1,7 @@
+import datetime
 import os
 import re
+import threading
 import time
 import requests
 from dotenv import load_dotenv
@@ -39,6 +41,18 @@ CHAT_DEADLINE = int(os.getenv("CHAT_DEADLINE", "180"))
 CHAT_HOURS = 48
 CHAT_MAX_CHARS = 150_000
 CHAT_MIN_TURNS = 8
+
+# While her model is in an outage (llm.outage), a chat message is saved and
+# answered when the model is back, rather than by the fallback: see llm.py.
+# The chat id waiting for that reply is kept here; the lock keeps the outage
+# job and a newly arrived message from answering the same turn twice.
+CHAT_PENDING_KEY = "chat_reply_pending"
+_chat_lock = threading.Lock()
+
+
+class ReplyDeferred(Exception):
+    """Her model is in an outage; the reply waits for it."""
+
 
 # Read-only lookups she may make while writing one chat reply (tools.py). Each
 # round is another model call inside CHAT_DEADLINE.
@@ -220,6 +234,13 @@ def handle_chat(user_message, chat_id):
     # was almost certainly a Claude-class model while running on GLM. The law
     # is here so that answer has something truer to stand on than introspection.
     law = lawbook.for_prompt()
+    if user_message is None:
+        # A reply that waited out an outage: what it answers is already in the
+        # history above, saved when it arrived.
+        closing = ("Your operator's latest message(s) in the history above went unanswered "
+                   f"while your model was not responding. Answer them now.")
+    else:
+        closing = f"[{memory._stamp(facts.now()[0])}] Operator: {user_message}"
     # Ordered for the provider's prompt cache, which reuses only an unchanged
     # beginning: what never changes first, then the history, which only grows
     # at its end and whose start moves in hour steps, then the facts, whose
@@ -258,7 +279,7 @@ the board in the same stretch of time, in time order:
 
 {facts.system_facts()}
 
-[{memory._stamp(facts.now()[0])}] Operator: {user_message}
+{closing}
 {HANDLE}:"""
 
     notified = {"sent": False}
@@ -307,6 +328,8 @@ the board in the same stretch of time, in time order:
         return ("⚠️ No reply: the OpenRouter account is out of credit.", False, None, [])
     except llm.ModelUnavailable as e:
         print(f"[Telegram Chat] {e}")
+        if llm.outage():
+            raise ReplyDeferred(str(e))
         return (f"⚠️ No reply: {' '.join(str(e).split())[:300]}", False, None, [])
     except Exception as e:
         print(f"[Telegram Chat] Unexpected error ({llm.MODEL_NAME}): {e!r}")
@@ -390,17 +413,8 @@ def _handle_command(text, chat_id):
     return False
 
 
-def _answer(parts, chat_id):
-    """Reply once to everything the operator sent in one burst."""
-    text = "\n\n".join(parts)
-    if len(parts) > 1:
-        print(f"[Telegram] Merged {len(parts)} messages into one turn ({len(text)} chars).")
-    # Generate BEFORE storing. handle_chat() builds its prompt from
-    # get_recent_dialogue() and then appends this message itself, so storing
-    # first put the message in the history AND in the appended line -- she read
-    # every message twice and said so, repeatedly.
-    reply, authored, fallback, lookups = handle_chat(text, chat_id)
-    memory.save_dialogue("Operator", text)
+def _deliver(chat_id, reply, authored, fallback, lookups):
+    """Record a reply and its harness notes, then send it."""
     if lookups:
         # What she read to write the reply: the harness's record, not her
         # words, so it is filed as System. She sees it in later turns.
@@ -415,12 +429,83 @@ def _answer(parts, chat_id):
     # A stillborn generation is not something she said. Filing it under her
     # handle put words in her mouth that she then read back as her own.
     memory.save_dialogue(HANDLE if authored else memory.SYSTEM_SPEAKER, reply)
+    if authored:
+        memory.set_state(CHAT_PENDING_KEY, "")
     footer = ""
     if fallback:
         footer += f"\n\n[written by fallback {fallback}]"
     if lookups:
         footer += ("\n" if fallback else "\n\n") + "🔎 looked up: " + " · ".join(lookups)
     send_telegram_message(chat_id, reply + footer)
+
+
+def _defer(chat_id, text, cause):
+    """Save a message her model could not answer, and say when it will be."""
+    memory.save_dialogue("Operator", text)
+    o = llm.outage() or {}
+    nxt = o.get("next")
+    when = (f"{memory._stamp(nxt)} ({datetime_local(nxt)} your time)" if nxt else "shortly")
+    if memory.get_state(CHAT_PENDING_KEY):
+        send_telegram_message(chat_id, f"⏳ Saved. Still waiting for {llm.MODEL_NAME}; next try {when}.")
+        return
+    memory.set_state(CHAT_PENDING_KEY, str(chat_id))
+    memory.save_dialogue(memory.SYSTEM_SPEAKER,
+                         f"Reply pending: {llm.MODEL_NAME} is not answering, so she will answer "
+                         "when it is back rather than let the fallback write as her.")
+    send_telegram_message(
+        chat_id,
+        f"⏳ {llm.MODEL_NAME} isn't answering, so she'll reply when it's back. Your message is "
+        f"saved; next try {when}. The fallback writes only after "
+        f"{llm.FALLBACK_AFTER_HOURS:g} hours.")
+
+
+def datetime_local(ts):
+    return datetime.datetime.fromtimestamp(ts, facts.OPERATOR_TZ).strftime("%-I:%M %p")
+
+
+def _answer(parts, chat_id):
+    """Reply once to everything the operator sent in one burst."""
+    text = "\n\n".join(parts)
+    if len(parts) > 1:
+        print(f"[Telegram] Merged {len(parts)} messages into one turn ({len(text)} chars).")
+    with _chat_lock:
+        # Generate BEFORE storing. handle_chat() builds its prompt from
+        # get_recent_dialogue() and then appends this message itself, so storing
+        # first put the message in the history AND in the appended line -- she
+        # read every message twice and said so, repeatedly.
+        try:
+            reply, authored, fallback, lookups = handle_chat(text, chat_id)
+        except ReplyDeferred as e:
+            _defer(chat_id, text, e)
+            return
+        memory.save_dialogue("Operator", text)
+        _deliver(chat_id, reply, authored, fallback, lookups)
+
+
+def answer_pending():
+    """Answer what was saved during an outage, once her model is back (or the
+    fallback's time has come). Called by outage_tick."""
+    with _chat_lock:
+        pending = memory.get_state(CHAT_PENDING_KEY)
+        if not pending:
+            return
+        try:
+            reply, authored, fallback, lookups = handle_chat(None, int(pending))
+        except ReplyDeferred:
+            return
+        _deliver(int(pending), reply, authored, fallback, lookups)
+
+
+def outage_tick():
+    """Run every minute: retry her model when its outage schedule says so, and
+    answer a waiting chat message as soon as there is a model to answer it."""
+    try:
+        if llm.probe_due():
+            llm.probe()
+        if memory.get_state(CHAT_PENDING_KEY) and (not llm.outage() or llm.fallback_allowed()):
+            answer_pending()
+    except Exception as e:
+        print(f"[Outage] Tick failed: {e!r}")
 
 
 def poll_telegram():
