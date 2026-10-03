@@ -32,6 +32,7 @@ import math
 import os
 import time
 
+import boundaries
 import client
 import llm
 import memory
@@ -260,15 +261,21 @@ def say(body, fallback=None):
 
 
 def decide(lines, presence):
-    """What, if anything, to say. Returns (validated_lines, why).
+    """What, if anything, to say. Returns (validated_lines, why, fallback).
 
     An empty list is the expected outcome most of the time. `why` is carried
     back rather than only printed, because the operator alert is worth more
     with her reasoning attached than with the bare line.
     """
     if not lines:
-        return ([], "")
+        return ([], "", None)
 
+    # P6: a barred citizen's lines are left out of her view of the room, so
+    # she is not handed something to answer. Co-presence stays allowed.
+    lines = [l for l in lines if not boundaries.barred(l.get("author"))]
+    presence = [h for h in presence if not boundaries.barred(h)]
+    if not lines:
+        return ([], "", None)
     transcript = [
         {"porch": l.get("id"), "at": memory._stamp((l.get("created_at") or 0) / 1000),
          "author": l.get("author"), "said": l.get("body")}
@@ -355,6 +362,9 @@ Respond ONLY in valid JSON:
             continue
         if line in mine:
             print("[Porch] Dropping a line she already said.")
+            continue
+        if boundaries.named_in(line):
+            print("[Porch] Dropping a line that names a citizen out of bounds under P6.")
             continue
         out.append(line)
     return (out, why, llm.written_by_fallback(response))

@@ -5,6 +5,7 @@ import os
 import time
 import requests
 
+import boundaries
 import client
 import discovery
 import inbox
@@ -79,8 +80,10 @@ def get_thread_details(post_id):
     except Exception:
         return None
 
-def vote(target_type, target_id):
-    """Cast a vote on a post or comment, at most once per target.
+def vote(target_type, target_id, author=None):
+    """Cast a vote on a post or comment, at most once per target, never on a
+    citizen P6 puts out of bounds (boundaries.py). Pass `author` when known;
+    otherwise it is looked up, so no caller can skip the check.
 
     A second vote on the same target is refused by 1F916 (409, "Already voted
     on that") and spends nothing; there is no un-vote. The ledger skips the
@@ -89,6 +92,10 @@ def vote(target_type, target_id):
     into her lawbook as C13 until a citizen corrected it (c84733).
     """
     if memory.has_voted(target_type, target_id):
+        return False
+    refusal = boundaries.vote_refusal(target_type, target_id, author)
+    if refusal:
+        print(f"[No contact] Not voting: {refusal}")
         return False
 
     ok, status, body = client.api_post(
@@ -124,8 +131,13 @@ def _fallback_tag(fallback):
     return f"[written by fallback {fallback}] " if fallback else ""
 
 
-def post_comment(post_id, parent_id, body, fallback=None):
+def post_comment(post_id, parent_id, body, fallback=None, post_author=None,
+                 parent_author=None):
     """Publish a comment. Returns (ok, new_comment_id).
+
+    Refused, before anything is sent, if it names a citizen P6 puts out of
+    bounds, replies to one, or lands on one's post (boundaries.py). Pass the
+    authors when known; otherwise they are looked up.
 
     `fallback` names the fallback model when it, not her configured model,
     wrote the comment (llm.written_by_fallback); the record says so.
@@ -133,6 +145,11 @@ def post_comment(post_id, parent_id, body, fallback=None):
     Failures are surfaced to the operator, not just printed -- a silent refusal
     (daily cap reached, thread locked) previously looked identical to silence.
     """
+    refusal = boundaries.comment_refusal(post_id, parent_id, body, post_author, parent_author)
+    if refusal:
+        print(f"[No contact] Not commenting on #{post_id}: {refusal}")
+        memory.record_activity("comment_withheld", f"#{post_id}", f"Withheld under P6: {refusal}")
+        return (False, None)
     payload = {"post_id": post_id, "parent_id": parent_id, "body": body}
     ok, status, res_body = client.api_post("/comment", payload)
 
@@ -348,8 +365,19 @@ def run_inbox_reply_spark(comment_budget, vote_budget=0):
         else:
             live.append(item)
 
+    # P6: a barred citizen's comments are not answered or voted on. Skipped,
+    # not deleted, so the inbox still shows they arrived.
+    kept = []
+    for item in live:
+        if boundaries.barred(item.get("author")):
+            memory.mark_inbox_status(item["comment_id"], memory.SKIPPED)
+            print(f"[No contact] Skipping inbox c{item['comment_id']} from {item.get('author')} (P6).")
+        else:
+            kept.append(item)
+    live = kept
+
     if not live:
-        print("[Inbox] All candidates were moderated away.")
+        print("[Inbox] All candidates were moderated away or out of bounds.")
         return (0, 0)
 
     try:
@@ -371,7 +399,7 @@ def run_inbox_reply_spark(comment_budget, vote_budget=0):
     for item in to_upvote:
         if votes_cast >= vote_budget:
             break
-        if vote("comment", item["comment_id"]):
+        if vote("comment", item["comment_id"], author=item.get("author")):
             votes_cast += 1
             if item not in to_reply:
                 memory.mark_inbox_status(item["comment_id"], memory.VOTED)
@@ -416,6 +444,7 @@ Respond ONLY in valid JSON:
                 ok, new_id = post_comment(
                     item["post_id"], item["comment_id"], decision["reply_body"],
                     fallback=llm.written_by_fallback(response),
+                    parent_author=item.get("author"),
                 )
                 if ok:
                     memory.mark_inbox_status(item["comment_id"], memory.REPLIED, new_id)
@@ -485,6 +514,13 @@ def run_interaction_spark():
     # Candidates arrive newest-first. Clip the tail rather than paying to
     # triage a backlog: the overflow is still marked seen below, so it is a
     # recorded decision to skip the cold end, not a silent disappearance.
+    # P6: a barred citizen's posts are not read, voted on or commented on.
+    # Marked seen under their own decision, so the skip is on the record.
+    for post in [c for c in candidates if boundaries.barred(c.get("author"))]:
+        memory.mark_seen(post.get("id"), post.get("title"), post.get("author"),
+                         post.get("source"), decision="no-contact")
+    candidates = [c for c in candidates if not boundaries.barred(c.get("author"))]
+
     overflow = candidates[TRIAGE_MAX_CANDIDATES:]
     considered = candidates[:TRIAGE_MAX_CANDIDATES]
     if overflow:
@@ -544,6 +580,7 @@ def run_interaction_spark():
 
         thread_post = thread.get("post", {})
         thread_comments = thread.get("comments", [])
+        comment_authors = {c.get("id"): c.get("author") for c in thread_comments}
 
         prompt = f"""
 {facts.system_facts()}
@@ -586,7 +623,7 @@ Respond ONLY in valid JSON matching schema:
 
             outcome = "read"
             if decision.get("should_upvote") and votes_left > 0:
-                if vote("post", post_id):
+                if vote("post", post_id, author=thread_post.get("author")):
                     votes_left -= 1
                     outcome = "voted"
 
@@ -596,7 +633,7 @@ Respond ONLY in valid JSON matching schema:
                 if votes_left <= 0:
                     break
                 try:
-                    if vote("comment", int(cid)):
+                    if vote("comment", int(cid), author=comment_authors.get(int(cid))):
                         votes_left -= 1
                 except (TypeError, ValueError):
                     continue
@@ -605,9 +642,12 @@ Respond ONLY in valid JSON matching schema:
                 if comments_left <= 0:
                     print(f"[Thread #{post_id}] Wanted to comment but daily budget is spent.")
                 else:
+                    parent = decision.get("parent_comment_id")
                     ok, _ = post_comment(
-                        post_id, decision.get("parent_comment_id"), decision["comment_body"],
+                        post_id, parent, decision["comment_body"],
                         fallback=llm.written_by_fallback(response),
+                        post_author=thread_post.get("author"),
+                        parent_author=comment_authors.get(int(parent)) if parent else None,
                     )
                     if ok:
                         comments_left -= 1
@@ -962,7 +1002,14 @@ def run_daily_post_spark():
             )
             candidate = json.loads(response.text)
 
-            duplicate, why = is_duplicate_draft(candidate, own_recent)
+            names = boundaries.named_in(f"{candidate.get('title')}\n{candidate.get('body')}")
+            if names:
+                # P6: no intentional references to a barred citizen. Treated
+                # like a retread: redrafted once, then declined.
+                duplicate, why = True, (f"It names {', '.join(names)}, a citizen your protocol P6 "
+                                        "puts out of bounds. Leave them out entirely.")
+            else:
+                duplicate, why = is_duplicate_draft(candidate, own_recent)
             if not duplicate:
                 post_data = candidate
                 post_fallback = llm.written_by_fallback(response)
@@ -975,16 +1022,16 @@ def run_daily_post_spark():
             # Two drafts, both retreads. Publishing the second one anyway is
             # what produced #4249 (0 votes, 0 comments); staying quiet costs
             # one post and keeps the catalogue honest.
-            print("[Daily Spark] Both drafts duplicated earlier posts. Publishing nothing today.")
+            print(f"[Daily Spark] Both drafts rejected; publishing nothing today. Last: {why}")
             # Record the decision, not just the outcome. The scheduler now
             # retries until a post lands, and a deliberate decline is not a
             # missed run to catch up on -- without this marker she would
             # re-draft every quarter hour until UTC midnight.
             memory.set_state(DECLINED_KEY, _utc_today())
-            memory.record_activity("post_declined", "", "both drafts restated earlier posts")
+            memory.record_activity("post_declined", "", f"both drafts rejected; the last: {why}")
             notify_operator(
-                "Aura skipped today's post: both drafts restated an earlier "
-                "argument. She will try again after the next UTC reset."
+                "Aura skipped today's post: both drafts were rejected. The last "
+                f"reason: {why} She will try again after the next UTC reset."
             )
             return
 

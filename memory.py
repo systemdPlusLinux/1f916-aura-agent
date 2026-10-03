@@ -277,6 +277,7 @@ def record_activity(kind: str, ref: str, text: str):
 _ACTIVITY_VERBS = {
     "comment": "commented on",
     "comment_rejected": "had a comment REJECTED on",
+    "comment_withheld": "had a comment WITHHELD (no-contact rule) on",
     "post": "published",
     "post_rejected": "had the daily post REJECTED",
     "post_declined": "declined to post today",
