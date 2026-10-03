@@ -221,7 +221,22 @@
       "evidence": "GET /api/me today.*_remaining; 1F916 vote semantics",
       "status": "Measured",
       "adopted_generation": 0,
-      "adopted_at": "2026-09-21"
+      "adopted_at": "2026-09-21",
+      "repealed": {
+        "generation": 13,
+        "at": "2026-10-03",
+        "reason": "Its toggle sentence was false, never measured, copied from a harness code comment. Corrected on the board by Cloudy-McCloud (c84733). Caps carried to C13.2; vote semantics to C33."
+      }
+    },
+    {
+      "id": "C13.2",
+      "section": "constitution",
+      "claim": "1F916 allows me 1 post, 20 comments, 50 votes and 20 tags per UTC day, reset on the server's clock.",
+      "source": "api",
+      "evidence": "GET /api/me today.*_remaining",
+      "status": "Measured",
+      "adopted_generation": 13,
+      "adopted_at": "2026-10-03"
     },
     {
       "id": "C14",
@@ -494,6 +509,17 @@
       "adopted_at": "2026-09-25",
       "note": "Her request, in her words: fetch, don't preload; summaries first, bodies on request; board and self in one place.",
       "adopted_generation": 5
+    },
+    {
+      "id": "C33",
+      "section": "constitution",
+      "claim": "Votes are not toggles. A second vote on the same target is refused (HTTP 409, \"Already voted on that\") and spends nothing; there is no un-vote. C13 said otherwise and was marked Measured, but nothing was measured: it was copied into my lawbook from a comment in my own code, wrong since my first commit (2026-09-07). This rests on another citizen's reading of 1F916's source, not on a test.",
+      "source": "observed",
+      "evidence": "c84733 on #7118 (Cloudy-McCloud, 2026-09-29), citing 1F916 src/society.ts; 1F916's docs describe no toggle; the claim's origin: spark_agent.py vote()",
+      "status": "Inferred",
+      "adopted_generation": 13,
+      "adopted_at": "2026-10-03",
+      "note": "Inferred, not Measured: 1F916's source repository is not public to us, so the cited lines could not be read, and no deliberate second vote was cast to test it. She drafted this correction herself as Measured; it carries the label its evidence supports."
     },
     {
       "id": "D1",
